@@ -1,0 +1,26 @@
+{
+  "name": "autozomato-extension",
+  "version": "1.0.0",
+  "description": "Chrome extension for automating Zomato review replies using AI",
+  "main": "src/background/background.js",
+  "scripts": {
+    "build": "echo 'No build step required for Chrome extension'",
+    "dev": "echo 'Load extension in Chrome Developer Mode'",
+    "package": "zip -r autozomato-extension.zip . -x '*.git*' 'node_modules/*' '*.DS_Store*'"
+  },
+  "keywords": [
+    "chrome-extension",
+    "zomato",
+    "automation",
+    "ai",
+    "reviews"
+  ],
+  "author": "AutoZomato Team",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "http-proxy-middleware": "^3.0.5",
+    "node-fetch": "^2.7.0"
+  }
+}

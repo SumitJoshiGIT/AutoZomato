@@ -1,0 +1,12 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Test AutoZomato Extension",
+			"type": "shell",
+			"command": "echo 'To test the extension:' && echo '1. Open Chrome and go to chrome://extensions/' && echo '2. Enable Developer mode' && echo '3. Click \"Load unpacked\" and select this folder' && echo '4. The extension should load with enhanced processing and reporting features' && echo '5. Check that auto-start toggle is available in settings' && echo '6. URLs from settings.json should be loaded automatically'",
+			"group": "test",
+			"isBackground": false
+		}
+	]
+}

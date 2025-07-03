@@ -1,0 +1,146 @@
+{
+    "categories": [
+        {
+            "id": "1",
+            "storyName": "5 Star Comments",
+            "responses": {
+                "No Written Review": [
+                    "Your 5-star rating makes us so happy, {CustomerName}! Thank you!",
+                    "Thanks! We’re glad that you had a great experience with us at {LocationName}!",
+                    "Hi {CustomerName}, we are grateful for your fantastic rating.",
+                    "Your positive review means a lot to us, {CustomerName}. We hope to see you again soon!",
+                    "Hi {CustomerName}, we're delighted to receive such a great rating. Your satisfaction is our top priority!"
+                ],
+                "Written Review": [
+                    "Hi {CustomerName}, thank you for the wonderful review. We’re glad that you had a great experience with us!",
+                    "This is what we aim for! Thank you for the heart-warming review, {CustomerName}. Have a great day!",
+                    "Your review has us beaming! We appreciate the time you took to let us know, {CustomerName}. We hope to see you back soon.",
+                    "Thank you, {CustomerName}. We appreciate the positive feedback! We would love to see you back soon at {LocationName}.",
+                    "Hi {CustomerName}, thank you for taking the time to share your experience with us.",
+                    "We're grateful for your kind words, {CustomerName}. Our team works hard to ensure every customer is happy!",
+                    "Thank you so much for your kind words! We're thrilled to hear that you had a positive experience with us.",
+                    "We’re glad you had a positive experience at {LocationName}! Thank you for the great review, {CustomerName}.",
+                    "It is our aim to impress, so we really appreciate your positive feedback. Thank you, {CustomerName}.",
+                    "Hi {CustomerName}, thank you for the great review. We cannot wait to share your compliments with our awesome team at {LocationName}.",
+                    "Thank you, {CustomerName}. We hope to see you again soon!"
+                ]
+            }
+        },
+        {
+            "id": "2",
+            "storyName": "4 Star Comments",
+            "responses": {
+                "No Written Review": [
+                    "We’re glad you had a positive experience at {LocationName}! Thank you for the great rating.",
+                    "Thank you for the positive rating, {CustomerName}. Please stop by again.",
+                    "Hi {CustomerName}, thank you for the great rating of {LocationName}.",
+                    "Awesome rating, {CustomerName}! We hope to see you back soon.",
+                    "We appreciate you taking the time to leave this positive rating. Thank you!"
+                ],
+                "Written Review": [
+                    "Hi {CustomerName}, thank you for sharing your feedback. Please let us know more about your experience by emailing details to hello@shariefbhai.com.",
+                    "Thank you for taking the time to review us, {CustomerName}. Please let us know more about how we can improve by emailing us at hello@shariefbhai.com or calling us on +91 8095752222.",
+                    "Hi {CustomerName}. Thank you for taking the time to review us. We aim for 5-star reviews — so please let us know further details on how we can improve at hello@shariefbhai.com.",
+                    "Hi {CustomerName}, we strive to provide nothing but excellence. If you’d like to share more information or have any suggestions, please send us an email at hello@shariefbhai.com.",
+                    "Hi {CustomerName}. Thank you for your feedback. Please feel free to send us the full details of your experience to hello@shariefbhai.com. We would love to connect with you further."
+                ]
+            }
+        },
+        {
+            "id": "3",
+            "storyName": "3 Star Comments",
+            "responses": {
+            "No Written Review": [
+                "Thank you for the rating, {CustomerName}. We would like to know more about your experience at {LocationName}. Please email us at hello@shariefbhai.com or call us on +91 8095752222.",
+                "We appreciate the rating, {CustomerName}. We want to know how we can make your experience more pleasant! Email us at hello@shariefbhai.com if you would like to share your thoughts & suggestions.",
+                "Hi {CustomerName}, thank you for taking the time to leave us a rating. Should you wish to share more about your experience, please send us an email at hello@shariefbhai.com or call us on +91 8095752222.",
+                "Hi {CustomerName}, please could you share more details regarding your experience at hello@shariefbhai.com or call us on +91 8095752222."
+            ],
+            "Written Review": [
+                "Hi {CustomerName}, thank you for sharing your feedback. Please let us know more about your experience by emailing details to hello@shariefbhai.com.",
+                "Thank you for taking the time to review us, {CustomerName}. Please let us know more about how we can improve by emailing us at hello@shariefbhai.com or calling us on +91 8095752222.",
+                "Hi {CustomerName}. Thank you for taking the time to review us. We aim for 5-star reviews — so please let us know further details on how we can improve at hello@shariefbhai.com.",
+                "Hi {CustomerName}, we strive to provide nothing but excellence. If you’d like to share more information or have any suggestions, please send us an email at hello@shariefbhai.com.",
+                "Hi {CustomerName}. Thank you for your feedback. Please feel free to send us the full details of your experience to hello@shariefbhai.com. We would love to connect with you further."
+            ]
+            }
+        },
+        {
+            "id": "4",
+            "storyName": "2 Star Comments",
+            "responses": {
+            "No Written Review": [
+                "Hi {CustomerName}, we are sad to learn that your experience with us was unpleasant. We would like to know more, so that we can improve. Please detail your experience at hello@shariefbhai.com.",
+                "We are so sorry that you left feeling disappointed. Please send us an email at hello@shariefbhai.com or call us on +91 8095752222 so that we can work on making your next experience better."
+            ],
+            "Written Review": [
+                "Hi {CustomerName}, thank you for letting us know. Please share more about your experience by emailing hello@shariefbhai.com or calling +91 8095752222.",
+                "Hi {CustomerName}, we're sorry for your disappointment. We're investigating and want to prevent this in the future. Feel free to contact us at hello@shariefbhai.com or call +91 8095752222 if you'd like to discuss this further.",
+                "Hi {CustomerName}, we apologize for falling short of expectations. We're committed to improvement. Let us make it right — please contact us at hello@shariefbhai.com or call +91 8095752222 so we can investigate.",
+                "Hi {CustomerName}, we’re sad to see we didn’t meet your expectations. If you’d like to share more information, please send us an email at hello@shariefbhai.com or call +91 8095752222.",
+                "Hi {CustomerName}, thank you for sharing your feedback. We're sorry for any inconvenience caused. Please reach out to us at hello@shariefbhai.com or call +91 8095752222 so we can better understand your experience and work to improve."
+            ]
+            }
+        },
+        {
+            "id": "5",
+            "storyName": "1 Star Comments",
+            "responses": {
+            "No Written Review": [
+                "Hi {CustomerName}, we’re sorry that your experience with us was dissatisfactory. Please let us know more at hello@shariefbhai.com so that we can aim for better.",
+                "Hi {CustomerName}, please provide us with more details on your experience at {LocationName} so that we can address any concerns. Our email address is hello@shariefbhai.com.",
+                "We apologise for the poor experience, {CustomerName}. Please let us know more at hello@shariefbhai.com or call us on +91 8095752222. Thank you!"
+            ],
+            "Written Review": [
+                "Hi {CustomerName}, thank you for letting us know. Please share more about your experience by emailing hello@shariefbhai.com or calling us on +91 8095752222.",
+                "Hi {CustomerName}. We're sorry for your disappointment. We're investigating and want to prevent this in the future. Feel free to contact us at hello@shariefbhai.com or call +91 8095752222 if you'd like to discuss this further.",
+                "Hi {CustomerName}. We apologize for falling short of expectations. We're committed to improvement. Let us make it right — please contact us at hello@shariefbhai.com or call +91 8095752222 so we can investigate.",
+                "Hi {CustomerName}, we’re sad to see we didn’t meet your expectations. If you’d like to share more information, please send us an email at hello@shariefbhai.com or call +91 8095752222.",
+                "Hi {CustomerName}, thank you for sharing your feedback. We're sorry for any inconvenience caused. Please reach out to us at hello@shariefbhai.com or call +91 8095752222 so we can better understand your experience and work to improve."
+            ]
+            }
+        }
+    ],
+    "complaints": [
+        {
+            "id": "1",
+            "storyName": "Incorrect Orders Received",
+            "responses": [
+                "Hi {CustomerName}, we apologize for the inconvenience caused. Please reach out to us directly with your order details on +91 8095752222 or email us at hello@shariefbhai.com so we can make it right for you. Your satisfaction is our top priority.",
+                "Dear {CustomerName}, we apologize for the inconvenience caused by the incorrect order. Please contact us on +91 8095752222 or email hello@shariefbhai.com, and we will ensure this is rectified immediately. Your satisfaction is our top priority."
+            ]
+        },
+        {
+            "id": "2",
+            "storyName": "Delivery Delays by Zomato",
+            "responses": [
+                "Hi {CustomerName}, we are sorry to hear about the delay with your order. We will communicate with Zomato to address these concerns and provide a better experience next time.",
+                "Hi {CustomerName}, we regret the delay caused by Zomato. We are coordinating with them to enhance the delivery experience. Thank you for bringing this to our attention."
+            ]
+        },
+        {
+            "id": "3",
+            "storyName": "Spill Packaging Issues",
+            "responses": [
+                "Hi {CustomerName}, we regret the inconvenience caused by the spill packaging. We are working to improve our packaging to prevent such issues in the future. Thank you for bringing this to our attention.",
+                "Dear {CustomerName}, we are sorry to hear about the spilled packaging. We are taking steps to improve our packaging standards. Please contact us at +91 8095752222 or email hello@shariefbhai.com so we can make it right for you."
+            ]
+        },
+        {
+            "id": "4",
+            "storyName": "Cooking Instructions Not Followed",
+            "responses": [
+                "Hi {CustomerName}, we apologize for not following your cooking instructions. Your feedback is valuable, and we will ensure that our team pays closer attention to special requests moving forward.",
+                "Dear {CustomerName}, we apologize for not following your cooking instructions. We value your feedback and will ensure our team adheres to special requests in the future. Kindly reach out to us at +91 8095752222 or hello@shariefbhai.com for a resolution."
+            ]
+        },
+        {
+            "id": "5",
+            "storyName": "Zomato Delivery-Related Issues",
+            "responses": [
+                "Hi {CustomerName}, we are sorry for the issues you faced with the delivery. We will communicate with Zomato to address these concerns and provide a better experience next time.",
+                "Hi {CustomerName}, we apologize for any issues caused by Zomato's delivery service. We are in communication with them to enhance the delivery experience. Thank you for bringing this to our attention."
+            ]
+        }
+    ]
+}

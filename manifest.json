@@ -1,0 +1,50 @@
+{
+    "manifest_version": 3,
+    "name": "AutoZomato - Review Reply Assistant",
+    "version": "1.0",
+    "description": "Universal review scraper with Ollama Gemma:2b AI replies - works with any website including local files",
+    "permissions": [
+        "tabs",
+        "storage",
+        "activeTab",
+        "scripting",
+        "downloads"
+    ],
+    "host_permissions": [
+        "https://www.zomato.com/*",
+        "http://localhost:11434/*",
+        "file:///*",
+        "http://*/*",
+        "https://*/*"
+    ],
+    "background": {
+        "service_worker": "src/background/background.js"
+    },
+    "content_scripts": [
+        {
+            "matches": ["https://www.zomato.com/*"],
+            "js": ["src/content/content.js"]
+        },
+        {
+            "matches": ["file:///*"],
+            "js": ["src/content/content.js"],
+            "run_at": "document_end"
+        }
+    ],
+    "action": {
+        "default_popup": "src/popup/popup.html",
+        "default_title": "AutoZomato"
+    },
+    "web_accessible_resources": [
+        {
+            "resources": ["urls.json", "settings.json", "response_bank.json"],
+            "matches": ["<all_urls>"]
+        }
+    ],
+    "icons": {
+        "16": "icons/icon16.png",
+        "48": "icons/icon48.png",
+        "128": "icons/icon128.png"
+    }
+}
+

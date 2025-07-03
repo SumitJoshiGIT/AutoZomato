@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>AutoZomato</h1>
+            <p>Review Reply Assistant</p>
+            <button id="close-popup-btn" class="close-btn" title="Close Extension">×</button>
+        </div>
+
+        <!-- Expiry Message -->
+        <div id="expiry-message" class="expiry-notice" style="display: none;">
+            <p>This version of the extension has expired. Please contact the developer for an updated version.</p>
+        </div>
+
+        <!-- Main Controls: Start/Stop and Toggles -->
+        <div class="controls">
+            <div class="main-actions">
+                <button id="start-btn" class="primary-btn">Start Processing</button>
+                <button id="stop-btn" class="secondary-btn" disabled>Stop</button>
+            </div>
+            <div class="toggles">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="auto-reply-toggle">
+                    <span class="slider"></span>
+                    <span class="toggle-label">Auto Reply</span>
+                </label>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="auto-close-toggle">
+                    <span class="slider"></span>
+                    <span class="toggle-label">Auto Close Tabs</span>
+                </label>
+            </div>
+        </div>
+
+        <!-- URL Management -->
+        <div class="url-section">
+            <div class="url-header">
+                <h3>Restaurant URLs</h3>
+            </div>
+            
+            <div class="url-list" id="url-list">
+                <!-- URL items will be dynamically added here -->
+            </div>
+            
+            <div class="url-input-container">
+                <input type="url" id="new-url-input" placeholder="Enter Zomato restaurant URL">
+                <button id="add-url-btn" class="add-btn" title="Add URL">+</button>
+            </div>
+            
+            <div class="url-actions">
+                <button id="clear-all-urls" class="danger-btn">Clear All</button>
+            </div>
+        </div>
+
+        <!-- Progress Tracking -->
+        <div class="progress-section" id="progress-section" style="display: none;">
+            <h3>Processing Progress</h3>
+            <div class="overall-progress">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="overall-progress-fill"></div>
+                </div>
+                <span id="overall-text">0 / 0 URLs processed</span>
+            </div>
+            
+            <div class="tab-progress" id="tab-progress">
+                <!-- Tab progress items will be dynamically added here -->
+            </div>
+            
+            <div class="logs-section">
+                <h4>Activity Logs</h4>
+                <div class="logs-container" id="logs-container">
+                    <!-- Log entries will be added here -->
+                </div>
+                <button id="clear-logs-btn" class="secondary-btn small-btn">Clear Logs</button>
+            </div>
+        </div>
+
+        <!-- Results Summary -->
+        <div class="results-section" id="results-section" style="display: none;">
+            <h3>Results Summary</h3>
+            <div class="stats">
+                <div class="stat-item">
+                    <span class="stat-label">Total Reviews:</span>
+                    <span class="stat-value" id="total-reviews">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Successful Replies:</span>
+                    <span class="stat-value" id="successful-replies">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Errors:</span>
+                    <span class="stat-value" id="error-count">0</span>
+                </div>
+            </div>
+            <button id="download-btn" class="primary-btn">Download Results</button>
+        </div>
+
+        <div class="status" id="status">Ready to start</div>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>
