@@ -7,7 +7,7 @@ class AutoZomatoBackground {
         this.results = { totalReviews: 0, successfulReplies: 0, errors: 0 };
         this.logs = []; // Store logs for state restoration
         this.tabStatuses = []; // Store tab statuses for state restoratio
-        this.expiryDate = new Date('2025-07-04T00:00:00Z'); // Hardcoded expiry date
+        this.expiryDate = new Date('2025-07-09T00:00:00Z'); // Hardcoded expiry date
         this.isExpired = new Date() > this.expiryDate;
         this.config = {
             maxTabs: 7,
