@@ -3,10 +3,11 @@ class AutoZomatoBackground {
         this.isProcessing = false;
         this.processingTabs = new Map();
         this.allResults = [];
+        this.detailedReviewLogs = []; // Store detailed review logs for Excel export
         this.progress = { current: 0, total: 0 };
         this.results = { totalReviews: 0, successfulReplies: 0, errors: 0 };
         this.logs = []; // Store logs for state restoration
-        this.tabStatuses = []; // Store tab statuses for state restoratio
+        this.tabStatuses = []; // Store tab statuses for state restoration
         this.expiryDate = new Date('2025-07-09T00:00:00Z'); // Hardcoded expiry date
         this.isExpired = new Date() > this.expiryDate;
         this.config = {
@@ -67,6 +68,9 @@ class AutoZomatoBackground {
                     this.updateConfig(message.data);
                     sendResponse({ success: true });
                     break;
+                case 'fetchRestaurantName':
+                    this.fetchRestaurantName(message.url).then(result => sendResponse(result));
+                    return true; // Keep message channel open for async response
             }
         });
 
@@ -133,6 +137,7 @@ class AutoZomatoBackground {
         };
         
         this.allResults = [];
+        this.detailedReviewLogs = []; // Reset detailed review logs
         this.processingTabs.clear();
         this.progress = { current: 0, total: this.config.urls.length };
         this.results = { totalReviews: 0, successfulReplies: 0, errors: 0 };
@@ -280,6 +285,18 @@ class AutoZomatoBackground {
         
         // Add results to global results
         this.allResults.push(...data.results);
+        
+        // Store detailed review logs if available
+        if (data.detailedReviewLog && Array.isArray(data.detailedReviewLog)) {
+            // Add URL and timestamp to each log entry
+            const enrichedLogs = data.detailedReviewLog.map(log => ({
+                ...log,
+                url: tabInfo.url,
+                timestamp: new Date().toISOString(),
+                restaurantName: this.extractRestaurantNameFromUrl(tabInfo.url)
+            }));
+            this.detailedReviewLogs.push(...enrichedLogs);
+        }
         
         // Update results totals
         this.results.totalReviews += data.reviewCount || 0;
@@ -459,17 +476,203 @@ class AutoZomatoBackground {
         }
     }
 
-    // File I/O for settings and results is no longer needed here
-    // as settings are simplified and results are handled by content scripts.
-    // downloadResults() can be simplified or removed if not used.
+    extractRestaurantNameFromUrl(url) {
+        try {
+            // Try to extract restaurant name from the URL
+            if (url.includes('entity_id=')) {
+                // For reviews_new.php URLs, we might not have the name in the URL
+                return 'Unknown Restaurant';
+            }
+            
+            // For regular restaurant URLs like /restaurant/name/id
+            const match = url.match(/\/restaurant\/([^\/]+)\/\d+/);
+            if (match) {
+                return decodeURIComponent(match[1]).replace(/-/g, ' ');
+            }
+            
+            return 'Unknown Restaurant';
+        } catch (error) {
+            return 'Unknown Restaurant';
+        }
+    }
+
     async downloadResults() {
-        this.addLog('Creating download for results...');
-        const blob = new Blob([JSON.stringify(this.allResults, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        chrome.downloads.download({
-            url: url,
-            filename: `autozomato_results_${Date.now()}.json`
-        });
+        this.addLog('Creating Excel download for results...');
+        
+        try {
+            // Create Excel-compatible CSV content
+            const csvContent = this.generateExcelCSV();
+            
+            // Create data URL instead of blob URL
+            const dataUrl = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvContent);
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            
+            chrome.downloads.download({
+                url: dataUrl,
+                filename: `autozomato_results_${timestamp}.csv`
+            });
+            
+            this.addLog('Excel file download initiated');
+        } catch (error) {
+            this.addLog('Error creating Excel file: ' + error.message, 'error');
+            console.error('Excel export error:', error);
+        }
+    }
+
+    generateExcelCSV() {
+        // CSV Headers
+        const headers = [
+            'Restaurant Name',
+            'Customer Name',
+            'Extracted Name',
+            'Review ID',
+            'Review Text',
+            'Rating',
+            'Complaint ID',
+            'Generated Reply',
+            'Replied Status',
+            'Included in Auto-Reply',
+            'URL',
+            'Timestamp'
+        ];
+        
+        // Convert detailed review logs to CSV rows
+        const rows = this.detailedReviewLogs.map(log => [
+            this.escapeCsvValue(log.restaurantName || 'Unknown Restaurant'),
+            this.escapeCsvValue(log.customerName || ''),
+            this.escapeCsvValue(log.extractedName || ''),
+            this.escapeCsvValue(log.reviewId || ''),
+            this.escapeCsvValue(log.reviewText || ''),
+            this.escapeCsvValue(log.rating || 'N/A'),
+            this.escapeCsvValue(log.complaintId || 'None'),
+            this.escapeCsvValue(log.reply || ''),
+            log.replied ? 'Yes' : 'No',
+            log.includeInAutoReply ? 'Yes' : 'No',
+            this.escapeCsvValue(log.url || ''),
+            this.escapeCsvValue(log.timestamp || '')
+        ]);
+        
+        // Add summary row if no detailed logs
+        if (rows.length === 0) {
+            rows.push([
+                'No detailed review data available',
+                '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                new Date().toISOString()
+            ]);
+        }
+        
+        // Combine headers and rows
+        const csvLines = [headers, ...rows];
+        
+        // Convert to CSV string
+        return csvLines.map(row => row.join(',')).join('\n');
+    }
+
+    escapeCsvValue(value) {
+        if (value === null || value === undefined) {
+            return '';
+        }
+        
+        const stringValue = String(value);
+        
+        // If value contains comma, quote, or newline, wrap in quotes and escape quotes
+        if (stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n')) {
+            return '"' + stringValue.replace(/"/g, '""') + '"';
+        }
+        
+        return stringValue;
+    }
+
+    async loadSettingsFromJson() {
+        try {
+            const response = await fetch(chrome.runtime.getURL('settings.json'));
+            if (response.ok) {
+                const settings = await response.json();
+                return { success: true, settings };
+            } else {
+                return { success: false, error: 'Settings file not found' };
+            }
+        } catch (error) {
+            console.error('Error loading settings.json:', error);
+            return { success: false, error: error.message };
+        }
+    }
+
+    async saveSettingsToJson(settings) {
+        // Note: Chrome extensions cannot write to files directly for security reasons
+        // This method is here for completeness but won't work
+        try {
+            // This would require additional permissions and is not recommended
+            // for security reasons in Chrome extensions
+            return { success: false, error: 'Saving settings to file is not supported in Chrome extensions' };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    }
+
+    async fetchRestaurantName(url) {
+        try {
+            // Create a temporary tab to fetch the restaurant name
+            const tab = await chrome.tabs.create({ url: url, active: false });
+            
+            // Wait for the page to load
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            // Try to extract the restaurant name
+            const results = await chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                func: () => {
+                    // Try multiple selectors for restaurant name
+                    const selectors = [
+                        '#res-main-name .header',
+                        '.res-main-name .header',
+                        '.restaurant-name',
+                        '.res-name',
+                        'h1[data-testid="restaurant-name"]',
+                        '.restaurant-header h1',
+                        '.page-header h1'
+                    ];
+                    
+                    for (const selector of selectors) {
+                        const element = document.querySelector(selector);
+                        if (element) {
+                            return element.textContent.trim();
+                        }
+                    }
+                    
+                    // Fallback to page title if no specific element found
+                    const title = document.title;
+                    if (title && !title.includes('Zomato')) {
+                        return title.split(' - ')[0].trim();
+                    }
+                    
+                    return null;
+                }
+            });
+            
+            // Close the temporary tab
+            await chrome.tabs.remove(tab.id);
+            
+            const restaurantName = results && results[0] && results[0].result;
+            if (restaurantName) {
+                return { success: true, name: restaurantName };
+            } else {
+                return { success: false, error: 'Restaurant name not found' };
+            }
+            
+        } catch (error) {
+            console.error('Error fetching restaurant name:', error);
+            return { success: false, error: error.message };
+        }
     }
 }
 

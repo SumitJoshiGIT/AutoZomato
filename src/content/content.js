@@ -131,7 +131,8 @@ async function startProcessing(promptContext) {
                 results: results,
                 reviewCount: finalReviews.length,
                 repliesCount: results.filter(function(r) { return r.success; }).length,
-                totalReviews: undefined
+                totalReviews: undefined,
+                detailedReviewLog: processedReviewsLog // Send the detailed log data
             }
         });
     } catch (error) {
@@ -392,8 +393,12 @@ Return ONLY the JSON object.`;
                 reviewId: review.reviewId, // Add reviewId for later use
                 customerName: review.customerName,
                 extractedName: isRealName ? extractFirstName(review.customerName) : 'N/A',
+                reviewText: review.reviewText || '', // Add the review text for export
+                rating: review.rating || 'N/A', // Add the rating for export
+                complaintId: complaintId || 'None', // Add the complaint ID for export
                 reply: finalReply,
-                replied: repliedStatus
+                replied: repliedStatus,
+                includeInAutoReply: true // Default to true - user can uncheck to exclude
             });
 
             // If the log popup is open, refresh its content
@@ -408,33 +413,75 @@ Return ONLY the JSON object.`;
 }
 
 function extractFirstName(fullName) {
-    if (!fullName || typeof fullName !== 'string') {
-        return null;
-    }
+    const firstName = fullName.split(' ')[0];
+    return firstName || fullName;
+}
 
-    // Remove common prefixes
-    const prefixes = ['Mr', 'Mrs', 'Ms', 'Dr', 'Prof'];
-    let name = fullName.trim();
-    for (const prefix of prefixes) {
-        if (name.toLowerCase().startsWith(prefix.toLowerCase() + '.') || name.toLowerCase().startsWith(prefix.toLowerCase() + ' ')) {
-            name = name.substring(prefix.length).trim();
-            if (name.startsWith('.')) {
-                name = name.substring(1).trim();
-            }
-            break; // Assume only one prefix
+function handleReplyEdit(event) {
+    const editableDiv = event.target;
+    const row = editableDiv.closest('tr');
+    if (!row) return;
+    
+    const reviewId = row.getAttribute('data-review-id');
+    if (!reviewId) return;
+    
+    // Clear any existing timeout for this element
+    if (editableDiv.updateTimeout) {
+        clearTimeout(editableDiv.updateTimeout);
+    }
+    
+    // Set a new timeout to debounce the updates
+    editableDiv.updateTimeout = setTimeout(() => {
+        const newReply = editableDiv.textContent.trim();
+        
+        // Update the processedReviewsLog
+        const logEntry = processedReviewsLog.find(log => log.reviewId === reviewId);
+        if (logEntry) {
+            logEntry.reply = newReply;
         }
+        
+        // Find the corresponding textarea on the page and update it
+        const reviewElement = document.querySelector(`.res-review[data-review_id="${reviewId}"]`);
+        if (reviewElement) {
+            const textarea = reviewElement.querySelector('textarea');
+            if (textarea) {
+                textarea.value = newReply;
+                // Trigger input event to ensure the change is registered
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                
+                // Add visual feedback to show the edit was synced
+                editableDiv.style.backgroundColor = '#e8f5e8';
+                setTimeout(() => {
+                    editableDiv.style.backgroundColor = '';
+                }, 1000);
+                
+                console.log(`[AutoZomato] Updated textarea for review ${reviewId} with new reply`);
+            } else {
+                console.warn(`[AutoZomato] Could not find textarea for review ${reviewId}`);
+            }
+        } else {
+            console.warn(`[AutoZomato] Could not find review element for review ${reviewId}`);
+        }
+    }, 300); // Wait 300ms after user stops typing
+}
+
+function handleIncludeCheckboxChange(event) {
+    const checkbox = event.target;
+    const row = checkbox.closest('tr');
+    if (!row) return;
+    
+    const reviewId = row.getAttribute('data-review-id');
+    if (!reviewId) return;
+    
+    // Update the processedReviewsLog
+    const logEntry = processedReviewsLog.find(log => log.reviewId === reviewId);
+    if (logEntry) {
+        logEntry.includeInAutoReply = checkbox.checked;
+        console.log(`[AutoZomato] Updated includeInAutoReply for review ${reviewId} to ${checkbox.checked}`);
+        
+        // Update the header summary
+        updateLogPopupHeader();
     }
-
-    // Split by space and take the first part
-    const parts = name.split(/\s+/);
-    const firstName = parts[0] || null;
-
-    if (firstName) {
-        // Capitalize the first letter and lowercase the rest
-        return firstName.charAt(0).toUpperCase() + firstName.slice(1).toLowerCase();
-    }
-
-    return null;
 }
 
 // Auto-detection of page type
@@ -527,6 +574,7 @@ function renderLogPopupContent() {
     table.innerHTML = `
         <thead style="background: #fafafa;">
             <tr>
+                <th style="padding: 8px; text-align: center; border-bottom: 1px solid #eee; width: 60px;">Include</th>
                 <th style="padding: 8px; text-align: left; border-bottom: 1px solid #eee;">Username</th>
                 <th style="padding: 8px; text-align: left; border-bottom: 1px solid #eee;">Reply (Editable)</th>
                 <th style="padding: 8px; text-align: center; border-bottom: 1px solid #eee;">Replied</th>
@@ -536,7 +584,7 @@ function renderLogPopupContent() {
 
     const tbody = document.createElement('tbody');
     if (processedReviewsLog.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="3" style="padding: 15px; text-align: center; color: #888;">No reviews processed yet.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="4" style="padding: 15px; text-align: center; color: #888;">No reviews processed yet.</td></tr>';
     } else {
         processedReviewsLog.forEach(log => {
             const row = document.createElement('tr');
@@ -547,7 +595,16 @@ function renderLogPopupContent() {
                 ? `<div class="editable-reply" contenteditable="true" style="padding: 5px; border-radius: 3px; border: 1px dashed #ccc;">${log.reply}</div>`
                 : `<div style="padding: 5px;">${log.reply}</div>`;
 
+            // Create checkbox - disabled if already replied
+            const checkboxDisabled = log.replied ? 'disabled' : '';
+            const checkboxChecked = log.includeInAutoReply ? 'checked' : '';
+
             row.innerHTML = `
+                <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: center; vertical-align: top;">
+                    <input type="checkbox" class="include-checkbox" ${checkboxChecked} ${checkboxDisabled} 
+                           title="${log.replied ? 'Already replied' : 'Include in auto-reply'}" 
+                           style="transform: scale(1.2);">
+                </td>
                 <td style="padding: 8px; border-bottom: 1px solid #eee; vertical-align: top;">
                     <strong>${log.extractedName}</strong><br>
                     <span style="color: #777;">(${log.customerName})</span>
@@ -568,6 +625,59 @@ function renderLogPopupContent() {
     popup.querySelectorAll('.editable-reply').forEach(div => {
         div.addEventListener('input', handleReplyEdit);
     });
+
+    // Add event listeners for checkboxes
+    popup.querySelectorAll('.include-checkbox').forEach(checkbox => {
+        checkbox.addEventListener('change', handleIncludeCheckboxChange);
+    });
+
+    // Update the header with summary information
+    updateLogPopupHeader();
+}
+
+function updateLogPopupHeader() {
+    const popup = document.getElementById('autozomato-log-popup');
+    if (!popup) return;
+
+    const headerSpan = popup.querySelector('span');
+    const replyAllBtn = popup.querySelector('button');
+    const selectAllBtn = popup.querySelector('.select-all-btn');
+    if (!headerSpan || !replyAllBtn) return;
+
+    const totalReviews = processedReviewsLog.length;
+    const selectedForReply = processedReviewsLog.filter(log => !log.replied && log.includeInAutoReply).length;
+    const alreadyReplied = processedReviewsLog.filter(log => log.replied).length;
+    const unselectedReviews = processedReviewsLog.filter(log => !log.replied && !log.includeInAutoReply).length;
+
+    headerSpan.innerHTML = `AutoZomato Reply Log (${totalReviews} reviews) - ${selectedForReply} selected for reply, ${alreadyReplied} already replied`;
+    
+    // Update the Reply to All button
+    if (selectedForReply > 0) {
+        replyAllBtn.innerHTML = `Reply to All (${selectedForReply})`;
+        replyAllBtn.style.opacity = '1';
+        replyAllBtn.disabled = false;
+    } else {
+        replyAllBtn.innerHTML = 'Reply to All (0)';
+        replyAllBtn.style.opacity = '0.5';
+        replyAllBtn.disabled = true;
+    }
+
+    // Update the Select All button
+    if (selectAllBtn) {
+        const availableToSelect = totalReviews - alreadyReplied;
+        if (availableToSelect === 0) {
+            selectAllBtn.style.display = 'none';
+        } else {
+            selectAllBtn.style.display = 'inline-block';
+            if (selectedForReply === availableToSelect) {
+                selectAllBtn.innerHTML = 'Deselect All';
+                selectAllBtn.style.background = '#e53e3e';
+            } else {
+                selectAllBtn.innerHTML = 'Select All';
+                selectAllBtn.style.background = '#48bb78';
+            }
+        }
+    }
 }
 
 function showLogPopup() {
@@ -629,6 +739,25 @@ function showLogPopup() {
         margin-right: 10px;
     `;
     replyAllBtn.onclick = handleReplyToAll;
+
+    // Create Select All/Deselect All button
+    const selectAllBtn = document.createElement('button');
+    selectAllBtn.className = 'select-all-btn';
+    selectAllBtn.innerHTML = 'Select All';
+    selectAllBtn.style.cssText = `
+        background: #48bb78;
+        color: white;
+        border: none;
+        font-size: 11px;
+        font-weight: bold;
+        padding: 4px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+        margin-right: 10px;
+    `;
+    selectAllBtn.addEventListener('click', handleSelectAll);
+
+    header.insertBefore(selectAllBtn, header.firstChild);
     header.insertBefore(replyAllBtn, header.firstChild);
 
     // Create close button
@@ -651,9 +780,37 @@ function showLogPopup() {
     renderLogPopupContent();
 }
 
+function handleSelectAll() {
+    const popup = document.getElementById('autozomato-log-popup');
+    if (!popup) return;
+
+    const selectAllBtn = popup.querySelector('.select-all-btn');
+    if (!selectAllBtn) return;
+
+    const checkboxes = popup.querySelectorAll('.include-checkbox:not(:disabled)');
+    const isSelectingAll = selectAllBtn.innerHTML === 'Select All';
+
+    checkboxes.forEach(checkbox => {
+        checkbox.checked = isSelectingAll;
+        // Trigger the change event to update the log
+        checkbox.dispatchEvent(new Event('change'));
+    });
+
+    // Update button text
+    selectAllBtn.innerHTML = isSelectingAll ? 'Deselect All' : 'Select All';
+    selectAllBtn.style.background = isSelectingAll ? '#e53e3e' : '#48bb78';
+}
+
 async function handleReplyToAll() {
     console.log('[AutoZomato] Starting Reply to All...');
-    const logsToReply = processedReviewsLog.filter(log => !log.replied);
+    const logsToReply = processedReviewsLog.filter(log => !log.replied && log.includeInAutoReply);
+
+    if (logsToReply.length === 0) {
+        console.log('[AutoZomato] No reviews selected for auto-reply.');
+        return;
+    }
+
+    console.log(`[AutoZomato] Found ${logsToReply.length} reviews to reply to.`);
 
     for (const log of logsToReply) {
         const reviewElement = document.querySelector(`.res-review[data-review_id="${log.reviewId}"]`);
@@ -677,7 +834,16 @@ async function handleReplyToAll() {
                         replyDiv.style.border = 'none';
                         replyDiv.classList.remove('editable-reply');
                     }
+                    // Disable the checkbox and update its title
+                    const checkbox = row.querySelector('.include-checkbox');
+                    if (checkbox) {
+                        checkbox.disabled = true;
+                        checkbox.title = 'Already replied';
+                    }
                 }
+
+                // Update the header summary
+                updateLogPopupHeader();
 
                 await new Promise(resolve => setTimeout(resolve, 500)); // Wait 500ms between clicks
             } else {

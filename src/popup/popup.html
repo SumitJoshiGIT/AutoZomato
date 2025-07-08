@@ -37,6 +37,24 @@
             </div>
         </div>
 
+        <!-- Date Range Selection -->
+        <div class="date-section">
+            <div class="date-header">
+                <h3>Date Range</h3>
+            </div>
+            
+            <div class="date-input-container">
+                <div class="date-field">
+                    <label for="start-date-input">Start Date:</label>
+                    <input type="date" id="start-date-input" />
+                </div>
+                <div class="date-field">
+                    <label for="end-date-input">End Date:</label>
+                    <input type="date" id="end-date-input" />
+                </div>
+            </div>
+        </div>
+
         <!-- URL Management -->
         <div class="url-section">
             <div class="url-header">
@@ -97,7 +115,13 @@
                     <span class="stat-value" id="error-count">0</span>
                 </div>
             </div>
-            <button id="download-btn" class="primary-btn">Download Results</button>
+            <button id="download-btn" class="primary-btn">Download Excel Report</button>
+            <p style="font-size: 12px; color: #666; margin-top: 5px; text-align: center;">
+                Includes detailed review data, replies, and processing status
+            </p>
+            <div id="results-timestamp" style="font-size: 11px; color: #888; text-align: center; margin-top: 5px; display: none;">
+                <!-- Timestamp will be shown here for previous results -->
+            </div>
         </div>
 
         <div class="status" id="status">Ready to start</div>
