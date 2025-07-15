@@ -7,7 +7,7 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>AutoZomato</h1>
+            <h1>Zomato AI Agent</h1>
             <p>Review Reply Assistant</p>
             <button id="close-popup-btn" class="close-btn" title="Close Extension">×</button>
         </div>
@@ -55,10 +55,39 @@
             </div>
         </div>
 
+        <!-- Group Management -->
+        <div class="group-section">
+            <div class="group-header">
+                <h3>URL Groups</h3>
+                <div class="group-header-controls">
+                    <button id="select-all-groups" class="secondary-btn small-btn">Select All Groups</button>
+                    <button id="deselect-all-groups" class="secondary-btn small-btn">Deselect All Groups</button>
+                    <button id="process-selected-groups" class="primary-btn small-btn" disabled>Process Selected Groups</button>
+                    <button id="create-group-btn" class="add-btn" title="Create New Group">+</button>
+                </div>
+            </div>
+            
+            <div class="group-list" id="group-list">
+                <!-- Group items will be dynamically added here -->
+            </div>
+            
+            <div class="group-input-container" id="group-input-container" style="display: none;">
+                <input type="text" id="new-group-name" placeholder="Enter group name">
+                <button id="save-group-btn" class="add-btn" title="Save Group">✓</button>
+                <button id="cancel-group-btn" class="secondary-btn" title="Cancel">✗</button>
+            </div>
+        </div>
+
         <!-- URL Management -->
         <div class="url-section">
             <div class="url-header">
                 <h3>Restaurant URLs</h3>
+                <div class="url-header-controls">
+                    <select id="group-selector" class="group-select">
+                        <option value="">No Group</option>
+                    </select>
+                    <button id="process-selected-btn" class="primary-btn small-btn" disabled>Process Selected</button>
+                </div>
             </div>
             
             <div class="url-list" id="url-list">
@@ -72,6 +101,8 @@
             
             <div class="url-actions">
                 <button id="clear-all-urls" class="danger-btn">Clear All</button>
+                <button id="select-all-urls" class="secondary-btn">Select All</button>
+                <button id="deselect-all-urls" class="secondary-btn">Deselect All</button>
             </div>
         </div>
 

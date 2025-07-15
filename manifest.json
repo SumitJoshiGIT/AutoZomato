@@ -1,6 +1,6 @@
 {
     "manifest_version": 3,
-    "name": "AutoZomato - Review Reply Assistant",
+    "name": "Zomato AI Agent",
     "version": "1.0",
     "description": "Universal review scraper with Ollama Gemma:2b AI replies - works with any website including local files",
     "permissions": [
@@ -8,7 +8,8 @@
         "storage",
         "activeTab",
         "scripting",
-        "downloads"
+        "downloads",
+        "notifications"
     ],
     "host_permissions": [
         "https://www.zomato.com/*",

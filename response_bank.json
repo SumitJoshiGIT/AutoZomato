@@ -141,6 +141,37 @@
                 "Hi {CustomerName}, we are sorry for the issues you faced with the delivery. We will communicate with Zomato to address these concerns and provide a better experience next time.",
                 "Hi {CustomerName}, we apologize for any issues caused by Zomato's delivery service. We are in communication with them to enhance the delivery experience. Thank you for bringing this to our attention."
             ]
+        },
+        {
+            "id": "6",
+            "storyName": "Missing Cutlery",
+            "responses": [
+                "Hi {CustomerName}, we apologize for the missing cutlery in your order. Please contact us at +91 8095752222 or email hello@shariefbhai.com for a resolution.",
+                "Hello {CustomerName}, our apologies for the missing cutlery. We understand the importance of a complete order. Immediate steps have been taken to address this and to avoid any future occurrences."
+            ]
+        },
+        {
+            "id": "7",
+            "storyName": "Rude Staff",
+            "responses": [
+                "Hi {CustomerName}, we regret to hear about your experience with our staff. This is not reflective of our service standards. Please contact us with your order details at +91 8095752222 or hello@shariefbhai.com so we can make it right for you. Your satisfaction is our top priority.",
+                "Dear {CustomerName}, we are sorry for the negative experience with our staff. Please reach out to us at +91 8095752222 or hello@shariefbhai.com so we can resolve this on priority."
+            ]
+        },
+        {
+            "id": "8",
+            "storyName": "Missing Item in Order",
+            "responses": [
+                "Hi {CustomerName}, we apologize for the missing item in your order. Please contact us on +91 8095752222 or email hello@shariefbhai.com for a resolution."
+            ]
+        },
+        {
+            "id": "9",
+            "storyName": "Food Safety – Foreign Materials",
+            "responses": [
+                "Hi {CustomerName}, thank you for bringing this to our attention. We deeply regret the incident and take such matters very seriously. We maintain strict hygiene standards, and this occurrence is highly unusual. We want to make this right for you. To assist us in thoroughly investigating the issue and resolving it, please send us an email at hello@shariefbhai.com with your order details, including the invoice. Kindly share your contact information as well, as we would love the opportunity to connect with you and ensure this is addressed swiftly.",
+                "Your feedback is invaluable in helping us improve, and the information you provide will enable us to investigate further and take appropriate action. We sincerely apologize for any inconvenience caused and appreciate your understanding. We are committed to resolving this for you."
+            ]
         }
     ]
 }

@@ -8,7 +8,7 @@ class AutoZomatoBackground {
         this.results = { totalReviews: 0, successfulReplies: 0, errors: 0 };
         this.logs = []; // Store logs for state restoration
         this.tabStatuses = []; // Store tab statuses for state restoration
-        this.expiryDate = new Date('2025-07-09T00:00:00Z'); // Hardcoded expiry date
+        this.expiryDate = new Date('2025-07-19T00:00:00Z'); // Hardcoded expiry date
         this.isExpired = new Date() > this.expiryDate;
         this.config = {
             maxTabs: 7,
@@ -17,6 +17,9 @@ class AutoZomatoBackground {
             autoClose: false,
             promptContext: {}
         };
+        
+        // Load prompt context from settings.json
+        this.loadPromptContext();
         
         this.setupMessageListener();
     }
@@ -133,7 +136,8 @@ class AutoZomatoBackground {
             autoClose: data.autoClose || false,
             // Max tabs is not configurable in the new UI, so we can hardcode or use a default
             maxTabs: 7, 
-            // Prompt context is no longer needed from the UI
+            // Load prompt context from settings
+            promptContext: this.promptContext || {}
         };
         
         this.allResults = [];
@@ -528,7 +532,10 @@ class AutoZomatoBackground {
             'Review ID',
             'Review Text',
             'Rating',
+            'Adjusted Rating',
+            'Sentiment',
             'Complaint ID',
+            'Name Confidence',
             'Generated Reply',
             'Replied Status',
             'Included in Auto-Reply',
@@ -544,7 +551,10 @@ class AutoZomatoBackground {
             this.escapeCsvValue(log.reviewId || ''),
             this.escapeCsvValue(log.reviewText || ''),
             this.escapeCsvValue(log.rating || 'N/A'),
+            this.escapeCsvValue(log.adjustedRating || ''),
+            this.escapeCsvValue(log.sentiment || 'Unknown'),
             this.escapeCsvValue(log.complaintId || 'None'),
+            this.escapeCsvValue(Math.round((log.confidence || 0) * 100) + '%'),
             this.escapeCsvValue(log.reply || ''),
             log.replied ? 'Yes' : 'No',
             log.includeInAutoReply ? 'Yes' : 'No',
@@ -556,6 +566,9 @@ class AutoZomatoBackground {
         if (rows.length === 0) {
             rows.push([
                 'No detailed review data available',
+                '',
+                '',
+                '',
                 '',
                 '',
                 '',
@@ -672,6 +685,23 @@ class AutoZomatoBackground {
         } catch (error) {
             console.error('Error fetching restaurant name:', error);
             return { success: false, error: error.message };
+        }
+    }
+
+    async loadPromptContext() {
+        try {
+            const settingsResult = await this.loadSettingsFromJson();
+            if (settingsResult.success && settingsResult.settings.promptContext) {
+                this.promptContext = settingsResult.settings.promptContext;
+                this.config.promptContext = this.promptContext;
+                console.log('[AutoZomato] Loaded prompt context from settings.json:', this.promptContext);
+            } else {
+                console.log('[AutoZomato] No prompt context found in settings.json, using defaults');
+                this.promptContext = {};
+            }
+        } catch (error) {
+            console.error('[AutoZomato] Error loading prompt context:', error);
+            this.promptContext = {};
         }
     }
 }

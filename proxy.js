@@ -9,8 +9,6 @@ app.use(express.json());
 
 app.post('/ollama/api/generate', async (req, res) => {
   const ollamaUrl = 'http://localhost:11434/api/generate';
-  console.log(`[${new Date().toISOString()}] Forwarding POST request to ${ollamaUrl}`);
-  console.log('Request Body:', JSON.stringify(req.body, null, 2));
 
   try {
     const response = await fetch(ollamaUrl, {
