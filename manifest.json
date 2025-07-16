@@ -33,12 +33,11 @@
         }
     ],
     "action": {
-        "default_popup": "src/popup/popup.html",
         "default_title": "AutoZomato"
     },
     "web_accessible_resources": [
         {
-            "resources": ["urls.json", "settings.json", "response_bank.json"],
+            "resources": ["urls.json", "settings.json", "response_bank.json", "src/page/page.html", "src/page/page.css", "src/page/page.js", "icons/*"],
             "matches": ["<all_urls>"]
         }
     ],

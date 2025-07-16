@@ -15,20 +15,36 @@ class AutoZomatoBackground {
             urls: [],
             autoReply: false,
             autoClose: false,
-            promptContext: {}
+            promptContext: {},
+            gptMode: {
+                enabled: false,
+                apiKey: '',
+                keyName: 'AutoZomato GPT Key',
+                model: 'gpt-4o-mini'
+            }
         };
         
         // Load prompt context from settings.json
         this.loadPromptContext();
         
         this.setupMessageListener();
+        this.setupActionHandler();
     }
 
     setupMessageListener() {
         chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             switch (message.action) {
                 case 'startProcessing':
-                    this.startProcessing(message.data);
+                    console.log('[Background] Received startProcessing with:', {
+                        urls: message.urls?.length || 0,
+                        autoReply: message.autoReply,
+                        autoClose: message.autoClose
+                    });
+                    this.startProcessing({
+                        urls: message.urls || [],
+                        autoReply: message.autoReply !== undefined ? message.autoReply : false,
+                        autoClose: message.autoClose !== undefined ? message.autoClose : false
+                    });
                     sendResponse({ success: true });
                     break;
                 case 'stopProcessing':
@@ -55,11 +71,51 @@ class AutoZomatoBackground {
                 case 'saveSettingsToJson':
                     this.saveSettingsToJson(message.settings).then(result => sendResponse(result));
                     return true; // Keep message channel open for async response
+                case 'reloadConfiguration':
+                    console.log('[Background] Reloading configuration from settings.json...');
+                    this.loadPromptContext().then(async () => {
+                        console.log('[Background] Configuration reloaded successfully:', this.config);
+                        
+                        // Update all active content scripts with new configuration
+                        try {
+                            const tabs = await chrome.tabs.query({});
+                            const updatePromises = tabs.map(async (tab) => {
+                                try {
+                                    if (tab.url && (tab.url.includes('zomato.com') || tab.url.includes('file://'))) {
+                                        console.log(`[Background] Updating config for tab ${tab.id}: ${tab.url}`);
+                                        await chrome.tabs.sendMessage(tab.id, {
+                                            action: 'updateConfiguration',
+                                            config: this.config,
+                                            promptContext: this.promptContext
+                                        });
+                                    }
+                                } catch (tabError) {
+                                    console.log(`[Background] Could not update tab ${tab.id}:`, tabError.message);
+                                    // Tab might not have content script loaded, ignore error
+                                }
+                            });
+                            
+                            await Promise.allSettled(updatePromises);
+                            console.log('[Background] Configuration update sent to all active tabs');
+                        } catch (error) {
+                            console.warn('[Background] Error updating tabs with new config:', error);
+                        }
+                        
+                        sendResponse({ success: true, config: this.config });
+                    }).catch(error => {
+                        console.error('[Background] Configuration reload failed:', error);
+                        sendResponse({ success: false, error: error.message });
+                    });
+                    return true; // Keep message channel open for async response
                 case 'tabCompleted':
                     this.handleTabCompleted(sender.tab.id, message.data);
                     break;
                 case 'tabError':
                     this.handleTabError(sender.tab.id, message.error);
+                    break;
+                case 'reviewProcessed':
+                    // Forward real-time review data to dashboard
+                    this.forwardReviewProcessedToTabs(message.reviewData);
                     break;
                 case 'log': // Listen for logs from popup
                     this.addLog(message.message, message.type, message.timestamp, false); // Don't re-broadcast to popup
@@ -74,6 +130,12 @@ class AutoZomatoBackground {
                 case 'fetchRestaurantName':
                     this.fetchRestaurantName(message.url).then(result => sendResponse(result));
                     return true; // Keep message channel open for async response
+                case 'updateRestaurantName':
+                    this.handleRestaurantNameUpdate(sender.tab.id, message.restaurantName, message.url);
+                    break;
+                case 'updateTabProgress':
+                    this.handleTabProgressUpdate(sender.tab.id, message);
+                    break;
             }
         });
 
@@ -83,6 +145,15 @@ class AutoZomatoBackground {
                 this.processingTabs.delete(tabId);
                 this.checkProcessingComplete();
             }
+        });
+    }
+
+    setupActionHandler() {
+        // Handle extension icon click to open control panel
+        chrome.action.onClicked.addListener((tab) => {
+            chrome.tabs.create({
+                url: chrome.runtime.getURL('src/page/page.html')
+            });
         });
     }
 
@@ -129,16 +200,33 @@ class AutoZomatoBackground {
         this.isProcessing = true;
         this.processingStartTime = Date.now();
         
+        // Ensure we have the latest GPT configuration from Chrome storage
+        await this.loadPromptContext();
+        
         // Store configuration from popup
         this.config = {
             urls: data.urls || [],
             autoReply: data.autoReply || false,
             autoClose: data.autoClose || false,
+            gptMode: this.config.gptMode || { // Use the loaded gptMode from loadPromptContext
+                enabled: false,
+                apiKey: '',
+                keyName: 'AutoZomato GPT Key',
+                model: 'gpt-4o-mini'
+            },
             // Max tabs is not configurable in the new UI, so we can hardcode or use a default
             maxTabs: 7, 
             // Load prompt context from settings
             promptContext: this.promptContext || {}
         };
+        
+        console.log('[Background] Final processing configuration:', {
+            ...this.config,
+            gptMode: {
+                ...this.config.gptMode,
+                apiKey: this.config.gptMode.apiKey ? '***masked***' : ''
+            }
+        });
         
         this.allResults = [];
         this.detailedReviewLogs = []; // Reset detailed review logs
@@ -148,7 +236,8 @@ class AutoZomatoBackground {
         this.logs = []; // Reset logs for new processing
         this.tabStatuses = []; // Reset tab statuses
         
-        this.addLog(`🚀 Processing started: ${this.config.urls.length} URLs, Auto-Reply: ${this.config.autoReply}, Auto-Close: ${this.config.autoClose}`);
+        const gptModeStatus = this.config.gptMode.enabled ? `GPT-${this.config.gptMode.model}` : 'Ollama';
+        this.addLog(`🚀 Processing started: ${this.config.urls.length} URLs, Auto-Reply: ${this.config.autoReply}, Auto-Close: ${this.config.autoClose}, AI Mode: ${gptModeStatus}`);
         
         try {
             // Switch to sequential processing
@@ -248,15 +337,18 @@ class AutoZomatoBackground {
             // Inject content script and start processing
             setTimeout(async () => {
                 try {
+                    // First, inject the config into the page
                     await chrome.scripting.executeScript({
                         target: { tabId: tab.id },
                         func: (config) => {
                             // This code runs in the content script context
                             window.autoZomatoConfig = config;
+                            console.log('[AutoZomato Background] Config injected:', config);
                         },
                         args: [config] // Pass the entire config object
                     });
 
+                    // Then inject the content script (which will auto-start processing)
                     await chrome.scripting.executeScript({
                         target: { tabId: tab.id },
                         files: ['src/content/content.js'],
@@ -285,31 +377,85 @@ class AutoZomatoBackground {
         const tabInfo = this.processingTabs.get(tabId);
         if (!tabInfo) return;
         
-        this.addLog(`Tab ${tabId} completed processing - ${data.reviewCount} reviews, ${data.repliesCount} replies`);
+        // Prevent duplicate completion handling
+        if (tabInfo.status === 'completed') {
+            this.addLog(`Tab ${tabId} already completed, ignoring duplicate completion`, 'warning');
+            return;
+        }
         
-        // Add results to global results
-        this.allResults.push(...data.results);
+        // Use restaurant name from data if available, otherwise from tabInfo
+        const restaurantName = data.restaurantName || tabInfo.restaurantName || this.extractRestaurantNameFromUrl(tabInfo.url);
         
-        // Store detailed review logs if available
+        this.addLog(`${restaurantName} completed processing - ${data.reviewCount} reviews, ${data.repliesCount} replies`);
+        console.log(`[Background] Tab ${tabId} completion data:`, {
+            reviewCount: data.reviewCount,
+            repliesCount: data.repliesCount,
+            resultsLength: data.results?.length || 0,
+            detailedLogLength: data.detailedReviewLog?.length || 0
+        });
+        
+        // Add results to global results with duplicate prevention
+        if (data.results && Array.isArray(data.results)) {
+            const existingReviewIds = new Set(this.allResults.map(r => r.reviewId));
+            const newResults = data.results.filter(result => !existingReviewIds.has(result.reviewId));
+            
+            if (newResults.length !== data.results.length) {
+                this.addLog(`Filtered out ${data.results.length - newResults.length} duplicate reviews from ${restaurantName}`);
+            }
+            
+            this.allResults.push(...newResults);
+            this.addLog(`Added ${newResults.length} new results from ${restaurantName} (${data.results.length} total processed)`);
+        }
+        
+        // Store detailed review logs if available with duplicate prevention
         if (data.detailedReviewLog && Array.isArray(data.detailedReviewLog)) {
-            // Add URL and timestamp to each log entry
-            const enrichedLogs = data.detailedReviewLog.map(log => ({
-                ...log,
-                url: tabInfo.url,
-                timestamp: new Date().toISOString(),
-                restaurantName: this.extractRestaurantNameFromUrl(tabInfo.url)
-            }));
+            const existingLogReviewIds = new Set(this.detailedReviewLogs.map(log => log.reviewId));
+            
+            // Add URL and timestamp to each log entry and filter duplicates
+            const enrichedLogs = data.detailedReviewLog
+                .filter(log => !existingLogReviewIds.has(log.reviewId))
+                .map(log => ({
+                    ...log,
+                    url: tabInfo.url,
+                    timestamp: new Date().toISOString(),
+                    restaurantName: restaurantName
+                }));
+            
+            if (enrichedLogs.length !== data.detailedReviewLog.length) {
+                this.addLog(`Filtered out ${data.detailedReviewLog.length - enrichedLogs.length} duplicate detailed logs from ${restaurantName}`);
+            }
+            
             this.detailedReviewLogs.push(...enrichedLogs);
+            this.addLog(`Added ${enrichedLogs.length} detailed review logs from ${restaurantName}`);
         }
         
         // Update results totals
         this.results.totalReviews += data.reviewCount || 0;
         this.results.successfulReplies += data.repliesCount || 0;
         
+        // Send individual tab result to dashboard immediately
+        const tabResult = {
+            tabId: tabId,
+            url: tabInfo.url,
+            restaurantName: restaurantName,
+            reviewCount: data.reviewCount || 0,
+            repliesCount: data.repliesCount || 0,
+            results: data.results || [],
+            detailedReviewLog: data.detailedReviewLog || [],
+            timestamp: new Date().toISOString(),
+            status: 'completed'
+        };
+        
+        this.sendMessageToPopup({
+            action: 'tabResultReady',
+            tabResult: tabResult
+        });
+        
         // Update tab status tracking
         this.updateTabStatusTracking(tabId, tabInfo.url, 'completed', {
             reviewCount: data.reviewCount,
-            repliesCount: data.repliesCount
+            repliesCount: data.repliesCount,
+            restaurantName: restaurantName
         });
         
         // Update popup with completion status
@@ -317,6 +463,7 @@ class AutoZomatoBackground {
             tabId: tabId,
             url: tabInfo.url,
             status: 'completed',
+            restaurantName: restaurantName,
             data: {
                 reviewCount: data.reviewCount,
                 repliesCount: data.repliesCount
@@ -332,6 +479,7 @@ class AutoZomatoBackground {
         
         // Mark tab as completed
         tabInfo.status = 'completed';
+        tabInfo.restaurantName = restaurantName;
 
         // If we are in sequential mode, resolve the promise to unblock the loop
         if (this.currentTabResolver) {
@@ -444,7 +592,20 @@ class AutoZomatoBackground {
     }
 
     sendMessageToPopup(action, data) {
-        // Try to send message to popup
+        console.log('[Background] sendMessageToPopup called:', action, data);
+        
+        // Send to any dashboard pages
+        chrome.tabs.query({ url: chrome.runtime.getURL('src/page/page.html') }, (tabs) => {
+            console.log('[Background] Found dashboard tabs:', tabs.length);
+            tabs.forEach(tab => {
+                console.log('[Background] Sending message to dashboard tab:', tab.id, { action, ...data });
+                chrome.tabs.sendMessage(tab.id, { action, ...data }).catch((error) => {
+                    console.warn('[Background] Failed to send message to dashboard tab:', error);
+                });
+            });
+        });
+        
+        // Also try to send message to popup (for backward compatibility)
         chrome.runtime.sendMessage({ action, ...data }).catch(() => {
             // Popup might be closed, that's okay
         });
@@ -478,6 +639,59 @@ class AutoZomatoBackground {
         } else {
             this.tabStatuses.push(statusEntry);
         }
+    }
+
+    handleRestaurantNameUpdate(tabId, restaurantName, url) {
+        const tabInfo = this.processingTabs.get(tabId);
+        if (!tabInfo) return;
+        
+        // Store restaurant name for this tab
+        tabInfo.restaurantName = restaurantName;
+        
+        // Update tab status tracking with restaurant name
+        this.updateTabStatusTracking(tabId, url, 'processing', { 
+            restaurantName: restaurantName 
+        });
+        
+        // Send restaurant name update to dashboard
+        this.sendMessageToPopup('updateRestaurantName', {
+            tabId: tabId,
+            url: url,
+            restaurantName: restaurantName
+        });
+        
+        this.addLog(`Restaurant name updated for tab ${tabId}: ${restaurantName}`);
+    }
+
+    handleTabProgressUpdate(tabId, data) {
+        console.log('[Background] Received tab progress update:', tabId, data);
+        const tabInfo = this.processingTabs.get(tabId);
+        if (!tabInfo) {
+            console.warn('[Background] Tab info not found for:', tabId);
+            return;
+        }
+        
+        // Update tab info with progress data
+        tabInfo.progress = data.progress;
+        tabInfo.restaurantName = data.restaurantName;
+        
+        // Update tab status tracking
+        this.updateTabStatusTracking(tabId, data.url, data.status, {
+            restaurantName: data.restaurantName,
+            progress: data.progress
+        });
+        
+        // Send progress update to dashboard
+        console.log('[Background] Forwarding progress update to dashboard:', data);
+        this.sendMessageToPopup('updateTabProgress', {
+            tabId: tabId,
+            url: data.url,
+            restaurantName: data.restaurantName,
+            progress: data.progress,
+            status: data.status
+        });
+        
+        console.log(`Tab ${tabId} progress: ${data.progress.current}/${data.progress.total} - ${data.restaurantName}`);
     }
 
     extractRestaurantNameFromUrl(url) {
@@ -691,18 +905,107 @@ class AutoZomatoBackground {
     async loadPromptContext() {
         try {
             const settingsResult = await this.loadSettingsFromJson();
-            if (settingsResult.success && settingsResult.settings.promptContext) {
-                this.promptContext = settingsResult.settings.promptContext;
-                this.config.promptContext = this.promptContext;
-                console.log('[AutoZomato] Loaded prompt context from settings.json:', this.promptContext);
+            if (settingsResult.success) {
+                console.log('[AutoZomato] Raw settings loaded from settings.json:', settingsResult.settings);
+                
+                // Load prompt context
+                if (settingsResult.settings.promptContext) {
+                    this.promptContext = settingsResult.settings.promptContext;
+                    this.config.promptContext = this.promptContext;
+                    console.log('[AutoZomato] Loaded prompt context from settings.json:', this.promptContext);
+                } else {
+                    console.log('[AutoZomato] No prompt context found in settings.json, using defaults');
+                    this.promptContext = {};
+                }
+                
+                // Load GPT mode configuration from Chrome storage FIRST (page.html interface has priority)
+                try {
+                    const chromeStorageGpt = await chrome.storage.local.get([
+                        'gptModeEnabled', 'gptApiKey', 'gptKeyName', 'gptModel'
+                    ]);
+                    
+                    console.log('[AutoZomato] Chrome storage GPT settings:', {
+                        enabled: chromeStorageGpt.gptModeEnabled,
+                        hasApiKey: !!chromeStorageGpt.gptApiKey,
+                        keyName: chromeStorageGpt.gptKeyName,
+                        model: chromeStorageGpt.gptModel
+                    });
+                    
+                    // Check if Chrome storage has GPT configuration (from page.html interface)
+                    const hasChromeGptConfig = chromeStorageGpt.gptModeEnabled !== undefined || 
+                                             chromeStorageGpt.gptApiKey !== undefined;
+                    
+                    if (hasChromeGptConfig) {
+                        // Use Chrome storage configuration (from page.html)
+                        this.config.gptMode = {
+                            enabled: chromeStorageGpt.gptModeEnabled || false,
+                            apiKey: chromeStorageGpt.gptApiKey || '',
+                            keyName: chromeStorageGpt.gptKeyName || 'AutoZomato GPT Key',
+                            model: chromeStorageGpt.gptModel || 'gpt-4o-mini'
+                        };
+                        
+                        console.log('[AutoZomato] ✓ Using GPT configuration from Chrome storage (page.html interface):');
+                        console.log('  - Enabled:', this.config.gptMode.enabled);
+                        console.log('  - Has API key:', !!this.config.gptMode.apiKey && this.config.gptMode.apiKey !== 'YOUR_OPENAI_API_KEY_HERE');
+                        console.log('  - API key length:', this.config.gptMode.apiKey?.length || 0);
+                        console.log('  - Model:', this.config.gptMode.model);
+                        
+                    } else if (settingsResult.settings.gptMode) {
+                        // Fallback to settings.json if no Chrome storage config
+                        const originalGptConfig = JSON.parse(JSON.stringify(this.config.gptMode)); // Deep copy
+                        this.config.gptMode = {
+                            ...this.config.gptMode, // Keep defaults
+                            ...settingsResult.settings.gptMode // Override with settings.json values
+                        };
+                        
+                        console.log('[AutoZomato] ⚠ Using GPT configuration from settings.json (fallback):');
+                        console.log('  - Original config:', originalGptConfig);
+                        console.log('  - From settings.json:', settingsResult.settings.gptMode);
+                        console.log('  - Final merged config:', this.config.gptMode);
+                        console.log('  - Enabled:', this.config.gptMode.enabled);
+                        console.log('  - Has API key:', !!this.config.gptMode.apiKey && this.config.gptMode.apiKey !== 'YOUR_OPENAI_API_KEY_HERE');
+                        console.log('  - API key length:', this.config.gptMode.apiKey?.length || 0);
+                        console.log('  - Model:', this.config.gptMode.model);
+                    } else {
+                        console.log('[AutoZomato] ℹ No GPT mode configuration found in Chrome storage or settings.json, using defaults');
+                    }
+                    
+                } catch (chromeStorageError) {
+                    console.error('[AutoZomato] Error loading GPT config from Chrome storage:', chromeStorageError);
+                    
+                    // Fallback to settings.json if Chrome storage fails
+                    if (settingsResult.settings.gptMode) {
+                        this.config.gptMode = {
+                            ...this.config.gptMode,
+                            ...settingsResult.settings.gptMode
+                        };
+                        console.log('[AutoZomato] Using settings.json GPT config as fallback');
+                    }
+                }
             } else {
-                console.log('[AutoZomato] No prompt context found in settings.json, using defaults');
+                console.log('[AutoZomato] Failed to load settings.json, using defaults:', settingsResult.error);
                 this.promptContext = {};
             }
         } catch (error) {
             console.error('[AutoZomato] Error loading prompt context:', error);
             this.promptContext = {};
         }
+    }
+
+    forwardReviewProcessedToTabs(reviewData) {
+        // Forward review processing data to all dashboard tabs
+        chrome.tabs.query({}, (tabs) => {
+            tabs.forEach(tab => {
+                if (tab.url && tab.url.includes('page.html')) {
+                    chrome.tabs.sendMessage(tab.id, {
+                        action: 'reviewProcessed',
+                        reviewData: reviewData
+                    }).catch(() => {
+                        // Ignore errors for tabs that don't have the listener
+                    });
+                }
+            });
+        });
     }
 }
 

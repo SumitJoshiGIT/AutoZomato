@@ -37,6 +37,11 @@ if (typeof currentSessionUrl === 'undefined') {
     var currentSessionUrl = '';
 }
 
+// Store the restaurant name for the current page
+if (typeof currentRestaurantName === 'undefined') {
+    var currentRestaurantName = '';
+}
+
 // Debug function for testing popup functionality
 window.autoZomatoTestPopup = function() {
     console.log('[AutoZomato] Manual popup test called');
@@ -48,15 +53,60 @@ window.autoZomatoDebugState = function() {
     console.log('[AutoZomato] Debug State:');
     console.log('- processedReviewsLog.length:', processedReviewsLog.length);
     console.log('- currentSessionUrl:', currentSessionUrl);
+    console.log('- currentRestaurantName:', currentRestaurantName);
     console.log('- window.location.href:', window.location.href);
     console.log('- indicator element:', document.getElementById('autozomato-indicator'));
     console.log('- popup element:', document.getElementById('autozomato-log-popup'));
 };
 
+// Function to scrape restaurant name from the page
+function scrapeRestaurantName() {
+    try {
+        // Try the primary selector: #res-main-name .header
+        let nameElement = document.querySelector('#res-main-name');
+        
+        if (nameElement && nameElement.textContent.trim()) {
+            const restaurantName = nameElement.textContent.trim();
+            console.log('[AutoZomato] Restaurant name found:', restaurantName);
+            return restaurantName;
+        }
+        
+        // Fallback selectors in case the structure is different
+        const fallbackSelectors = [
+            '#res-main-name h1',
+            '.res-main-name .header',
+            '.restaurant-name',
+            'h1[data-testid="restaurant-name"]',
+            '.res-info h1'
+        ];
+        
+        for (const selector of fallbackSelectors) {
+            nameElement = document.querySelector(selector);
+            if (nameElement && nameElement.textContent.trim()) {
+                const restaurantName = nameElement.textContent.trim();
+                console.log('[AutoZomato] Restaurant name found with fallback selector:', selector, ':', restaurantName);
+                return restaurantName;
+            }
+        }
+        
+        console.warn('[AutoZomato] Could not find restaurant name on page');
+        return 'Restaurant';
+    } catch (error) {
+        console.error('[AutoZomato] Error scraping restaurant name:', error);
+        return 'Restaurant';
+    }
+}
+
 // Listen for initialization message from background script
 chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     if (message.action === 'startProcessing') {
-        console.log('[AutoZomato] Received startProcessing message');
+        console.log('[AutoZomato] Received startProcessing message with config:', message.config);
+        
+        // Set config from message if not already set
+        if (!window.autoZomatoConfig && message.config) {
+            window.autoZomatoConfig = message.config;
+            console.log('[AutoZomato] Config set from message:', window.autoZomatoConfig);
+        }
         
         // Clear any previous session data
         processedReviewsLog = [];
@@ -71,12 +121,42 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
         const promptContext = message.promptContext || {};
         startProcessing(promptContext);
         sendResponse({ success: true });
+    } else if (message.action === 'updateConfiguration') {
+        console.log('[AutoZomato] Received configuration update:', message.config);
+        
+        // Update the global configuration
+        window.autoZomatoConfig = message.config;
+        
+        // Log the updated GPT mode settings for debugging
+        if (message.config && message.config.gptMode) {
+            const gptConfig = message.config.gptMode;
+            console.log('[AutoZomato] Updated GPT Mode Configuration:', {
+                enabled: gptConfig.enabled,
+                hasApiKey: !!gptConfig.apiKey,
+                apiKeyLength: gptConfig.apiKey?.length || 0,
+                isPlaceholder: gptConfig.apiKey === 'YOUR_OPENAI_API_KEY_HERE',
+                model: gptConfig.model
+            });
+        }
+        
+        sendResponse({ success: true });
     }
 });
 
 async function startProcessing(promptContext) {
     try {
         console.log('[AutoZomato] Starting review processing on:', window.location.href);
+        console.log('[AutoZomato] Received config:', window.autoZomatoConfig);
+        
+        // Ensure config exists
+        if (!window.autoZomatoConfig) {
+            console.warn('[AutoZomato] No config found, using defaults');
+            window.autoZomatoConfig = {
+                autoReply: false,
+                autoClose: false,
+                promptContext: {}
+            };
+        }
 
         // Check if this is a new URL/page
         const newUrl = window.location.href;
@@ -86,6 +166,7 @@ async function startProcessing(promptContext) {
             
             // Clear previous session data for new page
             processedReviewsLog = [];
+            currentRestaurantName = ''; // Reset restaurant name for new page
             console.log('[AutoZomato] Cleared previous session data for new page');
 
             // Close any existing log popup from previous session
@@ -116,18 +197,60 @@ async function startProcessing(promptContext) {
             console.log('[AutoZomato] Page loaded.');
         }
 
+        // Scrape restaurant name from the page
+        console.log('[AutoZomato] Scraping restaurant name...');
+        currentRestaurantName = scrapeRestaurantName();
+        console.log('[AutoZomato] Current restaurant name:', currentRestaurantName);
+
+        // Send restaurant name to background script for dashboard updates
+        console.log('[AutoZomato] Sending restaurant name to background:', currentRestaurantName);
+        chrome.runtime.sendMessage({
+            action: 'updateRestaurantName',
+            restaurantName: currentRestaurantName,
+            url: window.location.href
+        });
+
+        // Send initial processing started message
+        console.log('[AutoZomato] Sending processing started message to background');
+        chrome.runtime.sendMessage({
+            action: 'updateTabProgress',
+            url: window.location.href,
+            restaurantName: currentRestaurantName,
+            progress: { current: 0, total: 0 },
+            status: 'starting'
+        });
+
         // Click Unanswered tab and get counts
         console.log('[AutoZomato] Clicking Unanswered tab and extracting counts...');
         const counts = await clickUnansweredTabAndExtractCounts();
         const unansweredCount = counts.unansweredReviews;
         console.log(`[AutoZomato] Unanswered reviews count: ${unansweredCount}`);
 
+        // Send initial progress to background script
+        chrome.runtime.sendMessage({
+            action: 'updateTabProgress',
+            url: window.location.href,
+            restaurantName: currentRestaurantName,
+            progress: { current: 0, total: unansweredCount },
+            status: 'processing'
+        });
+
         let repliesGenerated = 0;
-        createOrUpdateIndicator(`🤖 AutoZomato | ${repliesGenerated} / ${unansweredCount} Replies`);
+        createOrUpdateIndicator(`🤖 ${currentRestaurantName} | ${repliesGenerated} / ${unansweredCount} Replies`);
 
         const onReplySuccess = () => {
             repliesGenerated++;
-            createOrUpdateIndicator(`🤖 AutoZomato | ${repliesGenerated} / ${unansweredCount} Replies`);
+            createOrUpdateIndicator(`🤖 ${currentRestaurantName} | ${repliesGenerated} / ${unansweredCount} Replies`);
+            
+            // Send progress update to background script
+            console.log(`[AutoZomato] Sending progress update: ${repliesGenerated}/${unansweredCount} for ${currentRestaurantName}`);
+            chrome.runtime.sendMessage({
+                action: 'updateTabProgress',
+                url: window.location.href,
+                restaurantName: currentRestaurantName,
+                progress: { current: repliesGenerated, total: unansweredCount },
+                status: 'processing'
+            });
         };
 
         // Additional wait for dynamic content
@@ -171,32 +294,40 @@ async function startProcessing(promptContext) {
         }
 
         // Update indicator on completion
-        createOrUpdateIndicator(`✅ AutoZomato | ${repliesGenerated} / ${unansweredCount} Replies`, '#48bb78');
+        createOrUpdateIndicator(`✅ ${currentRestaurantName} | ${repliesGenerated} / ${unansweredCount} Replies`, '#48bb78');
 
-        // Collect all reviews again for final reporting
-        const finalReviews = await scrapeReviews();
-        // Prepare results for each review
+        // Send final progress update to background script
+        chrome.runtime.sendMessage({
+            action: 'updateTabProgress',
+            url: window.location.href,
+            restaurantName: currentRestaurantName,
+            progress: { current: repliesGenerated, total: unansweredCount },
+            status: 'completed'
+        });
+
+        // Prepare results only for reviews that were actually processed (have entries in processedReviewsLog)
         const results = [];
-        for (const review of finalReviews) {
+        for (const logEntry of processedReviewsLog) {
             results.push({
                 url: window.location.href,
-                reviewId: review.reviewId,
-                reviewText: review.reviewText,
-                reply: review.reply || '',
-                success: true
+                reviewId: logEntry.reviewId,
+                reviewText: logEntry.reviewText,
+                reply: logEntry.reply || '',
+                success: logEntry.replied || false
             });
         }
 
         // Send results back to background script
-        console.log('[AutoZomato] Sending results to background:', results);
+        console.log('[AutoZomato] Sending results to background (only processed reviews):', results);
         chrome.runtime.sendMessage({
             action: 'tabCompleted',
             data: {
                 results: results,
-                reviewCount: finalReviews.length,
+                reviewCount: processedReviewsLog.length, // Count of actually processed reviews
                 repliesCount: results.filter(function(r) { return r.success; }).length,
                 totalReviews: undefined,
-                detailedReviewLog: processedReviewsLog // Send the detailed log data
+                detailedReviewLog: processedReviewsLog, // Send the detailed log data
+                restaurantName: currentRestaurantName // Add restaurant name to completion data
             }
         });
     } catch (error) {
@@ -306,6 +437,7 @@ async function scrapeReviews() {
             const submitButton = el.querySelector('.zblack');
 
             if (reviewId && replyTextarea) { // Check for reviewId and a textarea to reply
+                console.log(`[AutoZomato Content] Scraped review with ID: ${reviewId}, customer: ${customerName}`);
                 reviews.push({
                     reviewId,
                     customerName,
@@ -315,6 +447,8 @@ async function scrapeReviews() {
                     replyTextarea: replyTextarea,
                     submitButton: submitButton
                 });
+            } else {
+                console.log(`[AutoZomato Content] Skipped review - reviewId: ${reviewId}, hasTextarea: ${!!replyTextarea}`);
             }
         } catch (error) {
             console.error(`[AutoZomato] Error scraping a review:`, error);
@@ -326,506 +460,53 @@ async function scrapeReviews() {
 }
 
 async function replyToReviews(reviews, promptContext, onReplySuccess) {
+    // Get configuration from global window object
+    const config = window.autoZomatoConfig || {};
+    
     // Load the response bank from the extension's files
     const responseBankUrl = chrome.runtime.getURL('response_bank.json');
     const response = await fetch(responseBankUrl);
     const responseBank = await response.json();
 
-    for (const review of reviews) {
+    // Filter out reviews that have already been processed
+    const processedReviewIds = processedReviewsLog.map(log => log.reviewId);
+    const unprocessedReviews = reviews.filter(review => !processedReviewIds.includes(review.reviewId));
+    
+    if (unprocessedReviews.length !== reviews.length) {
+        console.log(`[AutoZomato] Skipping ${reviews.length - unprocessedReviews.length} already processed reviews out of ${reviews.length} total`);
+        console.log(`[AutoZomato] Processing ${unprocessedReviews.length} new reviews`);
+    } else {
+        console.log(`[AutoZomato] Processing ${unprocessedReviews.length} reviews (all new)`);
+    }
+
+    for (const review of unprocessedReviews) {
         try {
             console.log(`[AutoZomato] Analyzing review:`, review);
 
-            const model = promptContext.model || 'mistral';
-
-            let firstName = null;
-            let confidence = 0;
-            
-            let nameExtractionPrompt = '';
-            if (promptContext.systemPrompt) {
-                nameExtractionPrompt = promptContext.systemPrompt + '\n\n';
-            }
-            
-            nameExtractionPrompt += `You are a name extraction expert. Your task is to extract the first name from a given customer name and provide a confidence score.
-
-Follow these rules precisely:
-1.  **Extract First Name**:
-    *   If the name is a clear real name (e.g., "Rahul Kumar"), extract the first part ("Rahul").
-    *   If it's a username with an embedded name (e.g., "rahul123"), extract the name part ("Rahul").
-    *   If it's a valid standalone name (e.g., "Zak"), use that.
-    *   If the name is generic, nonsensical, or just initials (e.g., "FD", "User123", "FoodLover"), the value MUST be \`null\`.
-    *   **CRITICAL**: NEVER invent, guess, or hallucinate a name. Only extract what is present.
-
-2.  **Confidence Score**:
-    *   **0.9-1.0**: For clear, real names (e.g., "Rahul Kumar").
-    *   **0.7-0.8**: For names clearly extracted from usernames (e.g., "rahul123").
-    *   **0.5-0.6**: For plausible standalone names (e.g., "Zak").
-    *   **0.0-0.4**: For generic/unclear names where firstName is \`null\`.
-
-**Customer Name to Analyze**: "${review.customerName}"
-
-**Output Format**:
-You MUST return ONLY a valid JSON object with two keys: "firstName" (string or null) and "confidence" (number). Do not include any other text, explanations, or markdown.
-
-**Examples**:
-*   Customer Name: "Jane Doe" -> \`{"firstName": "Jane", "confidence": 0.95}\`
-*   Customer Name: "janes_eats" -> \`{"firstName": "Jane", "confidence": 0.75}\`
-*   Customer Name: "S" -> \`{"firstName": null, "confidence": 0.1}\`
-*   Customer Name: "Foodie123" -> \`{"firstName": null, "confidence": 0.0}\`
-
-Now, analyze the customer name provided above and return the JSON object.`;
-
-            const nameExtractionBody = {
-                model: model,
-                prompt: nameExtractionPrompt,
-                stream: false,
-                format: 'json',
-                options: {
-                    temperature: 0.1,
-                    num_predict: 50
-                }
-            };
-
-            // --- DEBUG: Log raw AI name extraction response ---
-            let rawNameAIResponse = null;
-            try {
-                const nameResponse = await fetch('http://localhost:3000/ollama/api/generate', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(nameExtractionBody)
-                });
-
-                if (nameResponse.ok) {
-                    const nameResult = await nameResponse.json();
-                    rawNameAIResponse = nameResult.response;
-                    console.log('[AutoZomato][DEBUG] Raw AI Name Extraction Response:', rawNameAIResponse);
-                    try {
-                        const nameData = cleanAndParseJSON(nameResult.response);
-                        firstName = nameData.firstName;
-                        confidence = nameData.confidence || 0;
-                        // If AI returns 0 for a clear real name, override with fallback
-                        if (firstName && confidence === 0) {
-                            const extracted = smartExtractFirstName(review.customerName);
-                            if (extracted && extracted.name.toLowerCase() === firstName.toLowerCase()) {
-                                confidence = extracted.confidence;
-                                console.log('[AutoZomato][DEBUG] Overriding AI confidence with fallback:', confidence);
-                            }
-                        }
-                        console.log(`[AutoZomato] AI Name Extraction:`, { firstName, confidence });
-                    } catch (parseError) {
-                        console.warn(`[AutoZomato] Failed to parse name extraction response:`, parseError);
-                        const extracted = smartExtractFirstName(review.customerName);
-                        if (extracted) {
-                            firstName = extracted.name;
-                            confidence = extracted.confidence;
-                        }
-                    }
-                } else {
-                    console.warn(`[AutoZomato] Name extraction API error:`, nameResponse.status);
-                    const extracted = smartExtractFirstName(review.customerName);
-                    if (extracted) {
-                        firstName = extracted.name;
-                        confidence = extracted.confidence;
-                    }
-                }
-            } catch (nameError) {
-                console.warn(`[AutoZomato] Name extraction failed:`, nameError);
-                const extracted = smartExtractFirstName(review.customerName);
-                if (extracted) {
-                    firstName = extracted.name;
-                    confidence = extracted.confidence;
-                }
-            }
-
-            // Step 1b: Second AI Request - Review Analysis (Sentiment + Complaint)
-            let reviewAnalysisPrompt = '';
-            if (promptContext.systemPrompt) {
-                reviewAnalysisPrompt = promptContext.systemPrompt + '\n\n';
-            }
-            
-            reviewAnalysisPrompt += `TASK: Analyze this restaurant review and return JSON with complaint detection and sentiment.
-
-**CRITICAL INSTRUCTION: You MUST be extremely conservative in detecting complaints. Only assign a complaint ID if you find EXACT matches to the specific phrases listed below. If there's ANY doubt, return null.**
-
-REVIEW:
-Text: "${review.reviewText || 'No written review provided'}"
-Rating: ${review.rating}/5 stars
-
-COMPLAINT CATEGORIES WITH EXACT TRIGGERS:
-1. "Incorrect Orders Received" - ONLY if review contains: "wrong order", "different item", "ordered X got Y", "not what I ordered", "incorrect order"
-2. "Delivery Delays by Zomato" - ONLY if review contains: "late delivery", "slow delivery", "took hours", "very slow", "delayed", "came late"
-3. "Spill Packaging Issues" - ONLY if review contains: "spilled", "leaked", "broken container", "packaging broke", "container damaged"
-4. "Cooking Instructions Not Followed" - ONLY if review contains: "too spicy", "not spicy", "asked for mild", "instructions ignored", "special request not followed"
-5. "Zomato Delivery-Related Issues" - ONLY if review contains: "delivery person rude", "driver rude", "delivery guy", "courier rude"
-6. "Missing Cutlery" - ONLY if review contains: "no spoon", "missing spoon", "no fork", "no cutlery", "no utensils"
-7. "Rude Staff" - ONLY if review contains: "staff rude", "restaurant staff rude", "unprofessional staff", "rude behavior"
-8. "Missing Item in Order" - ONLY if review contains: "missing item", "incomplete order", "forgot item", "didn't get", "where is my"
-9. "Food Safety – Foreign Materials" - ONLY if review contains: "hair in food", "foreign object", "plastic in food", "dirty", "contaminated"
-
-**STRICT RULES:**
-- If review text is empty or just rating → complaintId: null
-- If review mentions general dissatisfaction without specific issues → complaintId: null
-- If review talks about taste, price, ambiance, quantity → complaintId: null
-- Words like "average", "okay", "cold food", "expensive" are NOT complaints → complaintId: null
-- Only return a complaint ID if you find EXACT phrase matches from the lists above
-
-**DO NOT DETECT COMPLAINTS FOR:**
-- General taste opinions: "food was average", "taste was okay", "not tasty"
-- Price concerns: "expensive", "overpriced", "costly"
-- Quality without specific issues: "cold food", "not fresh", "poor quality"
-- Ambiance/atmosphere: "noisy", "crowded", "atmosphere not good"
-- Portion size: "small quantity", "less food"
-- General dissatisfaction: "disappointed", "not satisfied", "expected better"
-
-SENTIMENT DETECTION:
-- "Positive": 4-5 stars OR positive words like "excellent", "great", "amazing", "good"
-- "Negative": 1-2 stars OR negative words like "bad", "terrible", "worst", "poor"
-- "Neutral": 3 stars OR neutral/mixed words like "average", "okay", "fine"
-
-EXAMPLES OF CORRECT ANALYSIS:
-✅ "Ordered chicken but got mutton" → {"complaintId": "1", "sentiment": "Negative"}
-✅ "Food took 3 hours to arrive" → {"complaintId": "2", "sentiment": "Negative"}
-✅ "No spoon provided with curry" → {"complaintId": "6", "sentiment": "Negative"}
-✅ "Found hair in my food" → {"complaintId": "9", "sentiment": "Negative"}
-
-❌ "Food was cold and tasteless" → {"complaintId": null, "sentiment": "Negative"}
-❌ "Expensive for the quantity" → {"complaintId": null, "sentiment": "Neutral"}
-❌ "Average taste, nothing special" → {"complaintId": null, "sentiment": "Neutral"}
-❌ "Restaurant was too noisy" → {"complaintId": null, "sentiment": "Neutral"}
-❌ "Food quality was poor" → {"complaintId": null, "sentiment": "Negative"}
-
-**FINAL CHECK:** Before returning any complaint ID, double-check that the review text contains one of the EXACT trigger phrases listed above. If not found, return null.
-
-Return ONLY JSON: {"complaintId": "X", "sentiment": "Y"}`;
-
-            // Add custom context if provided
-            if (promptContext.customInstructions) {
-                reviewAnalysisPrompt += `\n\nAdditional Context: ${promptContext.customInstructions}`;
-            }
-            
-            if (promptContext.tone) {
-                reviewAnalysisPrompt += `\nTone: ${promptContext.tone}`;
-            }
-            
-            if (promptContext.language) {
-                reviewAnalysisPrompt += `\nLanguage: ${promptContext.language}`;
-            }
-
-            reviewAnalysisPrompt += `\n\nReturn ONLY the JSON object with both fields.`;
-
-            const reviewAnalysisBody = {
-                model: model,
-                prompt: reviewAnalysisPrompt,
-                stream: false,
-                format: 'json',
-                options: {
-                    temperature: 0.1,          // Very low for consistent results
-                    top_p: 0.9,               // Focus on most probable tokens
-                    top_k: 40,                // Limit vocabulary  
-                    num_predict: 50,          // Short response for JSON only
-                    repeat_penalty: 1.1,      // Prevent repetition
-                    stop: ["\n", "```", "---", "EXAMPLES"] // Stop tokens
-                }
-            };
-
-            // --- DEBUG: Log raw AI review analysis response ---
-            let rawReviewAIResponse = null;
-            try {
-                const reviewResponse = await fetch('http://localhost:3000/ollama/api/generate', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(reviewAnalysisBody)
-                });
-
-                if (reviewResponse.ok) {
-                    const reviewResult = await reviewResponse.json();
-                    rawReviewAIResponse = reviewResult.response;
-                    console.log('[AutoZomato][DEBUG] Raw AI Review Analysis Response:', rawReviewAIResponse);
-                    try {
-                        const reviewData = cleanAndParseJSON(reviewResult.response);
-                        sentiment = reviewData.sentiment || 'Neutral';
-                        complaintId = reviewData.complaintId;
-                        
-                        // STRICT VALIDATION: Verify complaint detection against actual review text
-                        if (complaintId && complaintId !== null) {
-                            const reviewText = (review.reviewText || '').toLowerCase();
-                            let isValidComplaint = false;
-                            
-                            // Define exact trigger phrases for each complaint category
-                            const complaintTriggers = {
-                                '1': ['wrong order', 'different item', 'ordered chicken got mutton', 'ordered veg got non-veg', 'not what i ordered', 'incorrect order'],
-                                '2': ['late delivery', 'slow delivery', 'took hours', 'very slow', 'delayed delivery', 'came late', 'took 2 hours', 'took 3 hours'],
-                                '3': ['spilled', 'leaked', 'broken container', 'container broke', 'packaging broke', 'food spilled', 'leaked packaging'],
-                                '4': ['too spicy', 'not spicy', 'spice level', 'asked for mild', 'instructions ignored', 'special request'],
-                                '5': ['delivery person rude', 'driver rude', 'delivery guy rude', 'courier rude', 'delivery boy rude'],
-                                '6': ['no spoon', 'missing spoon', 'no fork', 'no cutlery', 'missing cutlery', 'no utensils'],
-                                '7': ['staff rude', 'restaurant staff rude', 'unprofessional staff', 'rude behavior'],
-                                '8': ['missing item', 'incomplete order', 'forgot item', 'didn\'t get', 'missing drink', 'where is my'],
-                                '9': ['hair in food', 'foreign object', 'plastic in food', 'dirty food', 'contaminated', 'hair strand']
-                            };
-                            
-                            // Check if any trigger phrase exists for the detected complaint
-                            if (complaintTriggers[complaintId]) {
-                                isValidComplaint = complaintTriggers[complaintId].some(trigger => 
-                                    reviewText.includes(trigger)
-                                );
-                            }
-                            
-                            // Additional checks for false positives
-                            if (isValidComplaint) {
-                                // Check for non-complaint indicators that should override
-                                const nonComplaintIndicators = [
-                                    'food was average', 'taste was okay', 'cold food', 'not tasty',
-                                    'expensive', 'overpriced', 'costly', 'price high',
-                                    'small quantity', 'less food', 'portion size',
-                                    'noisy', 'crowded', 'atmosphere', 'ambiance',
-                                    'poor quality' // without specific complaint context
-                                ];
-                                
-                                const hasNonComplaintIndicator = nonComplaintIndicators.some(indicator => 
-                                    reviewText.includes(indicator)
-                                );
-                                
-                                if (hasNonComplaintIndicator) {
-                                    console.warn(`[AutoZomato] AI detected complaint "${complaintId}" but review contains general dissatisfaction indicators. Removing.`);
-                                    isValidComplaint = false;
-                                }
-                            }
-                            
-                            if (!isValidComplaint) {
-                                console.warn(`[AutoZomato] AI hallucinated complaint "${complaintId}" - no matching trigger phrases found in: "${reviewText}". Removing.`);
-                                complaintId = null;
-                            } else {
-                                const matchedTrigger = complaintTriggers[complaintId].find(trigger => reviewText.includes(trigger));
-                                console.log(`[AutoZomato] Validated complaint "${complaintId}" with trigger phrase: "${matchedTrigger}"`);
-                            }
-                        }
-                        
-                        console.log(`[AutoZomato] AI Review Analysis (validated):`, { sentiment, complaintId });
-                    } catch (parseError) {
-                        console.warn(`[AutoZomato] Failed to parse review analysis response:`, parseError);
-                        // Only use fallback for sentiment, not complaints
-                        const fallback = fallbackAnalysis(review);
-                        sentiment = fallback.sentiment;
-                        complaintId = null; // No fallback for complaints - AI only
-                    }
-                } else {
-                    console.warn(`[AutoZomato] Review analysis API error:`, reviewResponse.status);
-                    // Only use fallback for sentiment, not complaints
-                    const fallback = fallbackAnalysis(review);
-                    sentiment = fallback.sentiment;
-                    complaintId = null; // No fallback for complaints - AI only
-                }
-            } catch (reviewError) {
-                console.warn(`[AutoZomato] Review analysis failed:`, reviewError);
-                // Only use fallback for sentiment, not complaints
-                const fallback = fallbackAnalysis(review);
-                sentiment = fallback.sentiment;
-                complaintId = null; // No fallback for complaints - AI only
-            }
-
-            // Combine results from both requests
-            let classification = {
-                sentiment: sentiment,
-                complaintId: complaintId,
-                firstName: firstName,
-                confidence: confidence
-            };
-
-            console.log(`[AutoZomato] Combined AI Analysis:`, {
-                reviewText: review.reviewText || 'No text',
-                rating: review.rating,
-                classification: classification
+            // Route to appropriate processing function based on mode
+            console.log(`[AutoZomato] Checking GPT mode configuration:`, {
+                config: config,
+                hasGptMode: !!config.gptMode,
+                gptModeEnabled: config.gptMode?.enabled,
+                hasApiKey: !!config.gptMode?.apiKey,
+                fullGptConfig: config.gptMode
             });
             
-            // Validate that we have all required fields
-            if (!classification || typeof classification.sentiment === 'undefined' || typeof classification.firstName === 'undefined') {
-                console.warn(`[AutoZomato] Incomplete classification data, using fallback for sentiment/name only:`, classification);
-                const fallback = fallbackAnalysis(review);
-                // Only use fallback for sentiment and name, preserve AI complaint detection (or lack thereof)
-                classification = {
-                    sentiment: classification.sentiment || fallback.sentiment,
-                    complaintId: classification.complaintId, // Keep AI result, don't use fallback
-                    firstName: classification.firstName || fallback.firstName,
-                    confidence: classification.confidence || fallback.confidence
-                };
-            }
-            
-            // Additional validation: Check if AI hallucinated a name that's not in the original customer name
-            if (classification.firstName && classification.firstName.length > 0) {
-                const customerNameLower = (review.customerName || '').toLowerCase();
-                const extractedNameLower = classification.firstName.toLowerCase();
-                
-                // Check if the extracted name is actually present in the customer name
-                if (!customerNameLower.includes(extractedNameLower)) {
-                    console.warn(`[AutoZomato] AI hallucinated name "${classification.firstName}" not found in "${review.customerName}". Removing.`);
-                    classification.firstName = null;
-                    classification.confidence = 0;
-                }
-            }
-            
-            // Additional validation: Check for hallucinated complaint IDs
-            if (classification.complaintId) {
-                const reviewText = (review.reviewText || '').toLowerCase().trim();
-                const rating = parseInt(review.rating) || 3;
-                
-                // If review text is empty or very short, likely no specific complaint
-                if (!reviewText || reviewText.length < 3) {
-                    console.warn(`[AutoZomato] AI detected complaint "${classification.complaintId}" but review text is too short: "${reviewText}". Removing.`);
-                    classification.complaintId = null;
-                }
-                // Only remove complaints for 5-star reviews with explicitly positive language
-                else if (rating >= 5 && reviewText.match(/(excellent|amazing|great|perfect|fantastic|wonderful|awesome|outstanding|superb|brilliant|love)/)) {
-                    console.warn(`[AutoZomato] AI detected complaint "${classification.complaintId}" but review seems very positive (${rating} stars, positive keywords). Removing.`);
-                    classification.complaintId = null;
-                }
-                // Additional check: ensure the complaint ID exists in our response bank
-                else if (!responseBank.complaints.some(c => c.id === classification.complaintId)) {
-                    console.warn(`[AutoZomato] AI returned invalid complaint ID "${classification.complaintId}". Removing.`);
-                    classification.complaintId = null;
-                }
-            }
-            
-            // Handle rating-sentiment mismatch: if rating is 4+ but sentiment is negative, reduce rating by 1
-            let adjustedRating = parseInt(review.rating) || 3;
-            if (adjustedRating >= 4 && classification.sentiment === 'Negative') {
-                adjustedRating = adjustedRating - 1;
-                console.log(`[AutoZomato] Rating-sentiment mismatch detected. Original rating: ${review.rating}, Sentiment: ${classification.sentiment}. Adjusted rating to: ${adjustedRating}`);
-            }
-            
-            console.log(`[AutoZomato] AI Analysis:`, classification);
-
-            let replyTemplate = '';
-            let selectedCategory = '';
-
-            // Step 2: Enhanced response template selection logic
-            if (classification.complaintId && responseBank.complaints.some(c => c.id === classification.complaintId)) {
-                // Priority 1: Specific complaint detected
-                const complaint = responseBank.complaints.find(c => c.id === classification.complaintId);
-                const options = complaint.responses;
-                replyTemplate = options[Math.floor(Math.random() * options.length)];
-                selectedCategory = `Complaint: ${complaint.storyName}`;
-                console.log(`[AutoZomato] Selected response from complaint: "${complaint.storyName}"`);
+            if (config && config.gptMode && config.gptMode.enabled && config.gptMode.apiKey) {
+                console.log(`[AutoZomato] Using GPT mode processing`);
+                await processReviewWithGPTMode(review, config, onReplySuccess);
             } else {
-                // Priority 2: Use star rating with enhanced subcategory logic
-                const rating = Math.floor(adjustedRating); // Use adjusted rating instead of original
-                const category = responseBank.categories.find(c => c.storyName.startsWith(String(rating)));
-                
-                console.log(`[AutoZomato] Using rating ${rating} (original: ${review.rating}, adjusted: ${adjustedRating}) for response selection`);
-                
-                if (category) {
-                    // Enhanced subcategory selection
-                    const hasReviewText = review.reviewText && review.reviewText.trim().length > 0;
-                    let subCategoryKey;
-                    
-                    if (hasReviewText) {
-                        // Use sentiment to choose appropriate subcategory
-                        if (classification.sentiment === 'Positive') {
-                            subCategoryKey = 'Written Review'; // Positive written reviews
-                        } else if (classification.sentiment === 'Negative') {
-                            subCategoryKey = 'Written Review'; // Negative written reviews - same responses but context aware
-                        } else {
-                            subCategoryKey = 'Written Review'; // Neutral written reviews
-                        }
-                    } else {
-                        subCategoryKey = 'No Written Review';
-                    }
-                    
-                    const options = category.responses[subCategoryKey];
-                    if (options && options.length > 0) {
-                        replyTemplate = options[Math.floor(Math.random() * options.length)];
-                        selectedCategory = `${category.storyName} -> ${subCategoryKey}`;
-                        console.log(`[AutoZomato] Selected response from category: "${selectedCategory}"`);
-                    }
-                }
-            }
-
-            if (!replyTemplate) {
-                console.warn('[AutoZomato] Could not find a suitable reply template for review:', review.reviewId);
-                continue; // Skip to the next review
-            }
-
-            // Step 3: Enhanced personalization with robust name handling
-            let finalReply = replyTemplate;
-            
-            // Use firstName from AI analysis if available and confidence is sufficient
-            if (classification.firstName && classification.confidence > 0.5) {
-                // Use AI-detected first name with good confidence
-                finalReply = finalReply.replace(/{CustomerName}/g, classification.firstName);
-                console.log(`[AutoZomato] Using AI-detected first name: "${classification.firstName}" (confidence: ${classification.confidence})`);
-            } else {
-                // Try manual extraction as fallback
-                const extractedName = extractFirstName(review.customerName);
-                if (extractedName && extractedName.length > 1 && !extractedName.match(/\d/)) {
-                    finalReply = finalReply.replace(/{CustomerName}/g, extractedName);
-                    console.log(`[AutoZomato] Using fallback extraction: "${extractedName}"`);
-                } else {
-                    // Use neutral greeting
-                    finalReply = finalReply.replace(/{CustomerName}/g, getRandomNeutralGreeting());
-                    console.log(`[AutoZomato] Using neutral greeting for uncertain name`);
-                }
-            }
-            
-            // Remove any remaining name placeholders and clean up formatting
-            finalReply = finalReply.replace(/,?\s?{CustomerName}/g, '');
-            finalReply = finalReply.replace(/{LocationName}/g, review.locationName || '');
-            
-            // Clean up any double spaces or formatting issues
-            finalReply = finalReply.replace(/\s+/g, ' ').trim();
-
-            console.log(`[AutoZomato] Generated reply for ${review.reviewId}:`, finalReply);
-
-            // Step 4: Insert the reply into the page
-            const textarea = review.replyTextarea;
-            const publishBtn = review.submitButton;
-
-            let repliedStatus = false;
-            if (textarea) {
-                textarea.value = finalReply;
-                textarea.dispatchEvent(new Event('input', { bubbles: true }));
-                console.log('[AutoZomato] Inserted reply for', review.reviewId);
-
-                // Report success to update the counter
-                onReplySuccess();
-
-                // Check the config passed from the background script to see if we should auto-click
-                if (window.autoZomatoConfig && window.autoZomatoConfig.autoReply) {
-                    if (publishBtn) {
-                        console.log(`[AutoZomato] Auto-reply enabled. Clicking publish for review ${review.reviewId}.`);
-                        publishBtn.click();
-                        repliedStatus = true;
-                    } else {
-                        console.warn(`[AutoZomato] Auto-reply enabled, but no publish button found for review ${review.reviewId}.`);
-                    }
-                }
-            } else {
-                console.warn('[AutoZomato] Could not find reply textarea for', review.reviewId);
-            }
-
-            // Log the details for the popup with enhanced data
-            processedReviewsLog.push({
-                reviewId: review.reviewId,
-                customerName: review.customerName,
-                extractedName: (classification.firstName && classification.confidence > 0.5) ? classification.firstName : 
-                             extractFirstName(review.customerName) || 'N/A',
-                reviewText: review.reviewText || '',
-                rating: review.rating || 'N/A',
-                adjustedRating: adjustedRating !== (parseInt(review.rating) || 3) ? adjustedRating : null, // Only log if different
-                sentiment: classification.sentiment || 'Unknown',
-                complaintId: classification.complaintId || 'None',
-                confidence: classification.confidence || 0,
-                selectedCategory: selectedCategory || 'Unknown',
-                reply: finalReply,
-                replied: repliedStatus,
-                includeInAutoReply: true
-            });
-
-            // If the log popup is open, refresh its content
-            if (document.getElementById('autozomato-log-popup')) {
-                renderLogPopupContent();
+                console.log(`[AutoZomato] Using Ollama mode processing - reasons:`, {
+                    noConfig: !config,
+                    noGptMode: !config?.gptMode,
+                    notEnabled: !config?.gptMode?.enabled,
+                    noApiKey: !config?.gptMode?.apiKey
+                });
+                await processReviewWithOllamaMode(review, config, promptContext, responseBank, onReplySuccess);
             }
 
         } catch (error) {
-            console.error('[AutoZomato] Error generating reply:', error);
+            console.error('[AutoZomato] Error processing review:', error);
         }
     }
 }
@@ -1050,6 +731,635 @@ function handleIncludeCheckboxChange(event) {
     }
 }
 
+// GPT Mode Processing - Single-prompt analysis + Response bank reply generation
+async function processReviewWithGPTMode(review, config, onReplySuccess) {
+    try {
+        // Step 1: Get GPT analysis (firstName, sentiment, complaintId only)
+        const gptResult = await processReviewWithGPT(review, config);
+        
+        // Load the response bank from the extension's files for reply generation
+        const responseBankUrl = chrome.runtime.getURL('response_bank.json');
+        const response = await fetch(responseBankUrl);
+        const responseBank = await response.json();
+        
+        // Step 2: Generate reply using response bank (same logic as Ollama mode)
+        let replyTemplate = '';
+        let selectedCategory = '';
+        
+        // Use GPT-detected sentiment and complaint for response bank selection
+        const adjustedRating = parseInt(review.rating) || 3;
+
+        if (gptResult.complaintId && responseBank.complaints.some(c => c.id === gptResult.complaintId)) {
+            const complaint = responseBank.complaints.find(c => c.id === gptResult.complaintId);
+            const options = complaint.responses;
+            replyTemplate = options[Math.floor(Math.random() * options.length)];
+            selectedCategory = `Complaint: ${complaint.storyName}`;
+        } else {
+            const rating = Math.floor(adjustedRating);
+            const category = responseBank.categories.find(c => c.storyName.startsWith(String(rating)));
+            
+            if (category) {
+                const hasReviewText = review.reviewText && review.reviewText.trim().length > 0;
+                const subCategoryKey = hasReviewText ? 'Written Review' : 'No Written Review';
+                const options = category.responses[subCategoryKey];
+                
+                if (options && options.length > 0) {
+                    replyTemplate = options[Math.floor(Math.random() * options.length)];
+                    selectedCategory = `${category.storyName} -> ${subCategoryKey}`;
+                }
+            }
+        }
+
+        if (!replyTemplate) {
+            replyTemplate = 'Thank you for your review! We appreciate your feedback.';
+            selectedCategory = 'Default';
+        }
+
+        // Step 3: Personalize reply using GPT-extracted name
+        let finalReply = replyTemplate;
+        
+        if (gptResult.firstName) {
+            finalReply = finalReply.replace(/{CustomerName}/g, gptResult.firstName);
+        } else {
+            const extractedName = extractFirstName(review.customerName);
+            if (extractedName && extractedName.length > 1 && !extractedName.match(/\d/)) {
+                finalReply = finalReply.replace(/{CustomerName}/g, extractedName);
+            } else {
+                finalReply = finalReply.replace(/{CustomerName}/g, getRandomNeutralGreeting());
+            }
+        }
+        
+        finalReply = finalReply.replace(/,?\s?{CustomerName}/g, '');
+        finalReply = finalReply.replace(/{LocationName}/g, review.locationName || '');
+        finalReply = finalReply.replace(/\s+/g, ' ').trim();
+
+        // Send the processed review data to background
+        const reviewDataToSend = {
+            reviewId: review.reviewId,
+            customerName: review.customerName,
+            extractedName: gptResult.firstName,
+            reviewText: review.reviewText,
+            rating: review.rating,
+            sentiment: gptResult.sentiment,
+            complaintId: gptResult.complaintId,
+            reply: finalReply,
+            replied: false,
+            restaurantName: currentRestaurantName
+        };
+        
+        console.log('[AutoZomato Content] Sending GPT review data to background:', {
+            reviewId: reviewDataToSend.reviewId,
+            customerName: reviewDataToSend.customerName,
+            restaurantName: reviewDataToSend.restaurantName,
+            hasReply: !!reviewDataToSend.reply
+        });
+        
+        chrome.runtime.sendMessage({
+            action: 'reviewProcessed',
+            reviewData: reviewDataToSend
+        });
+        
+        // Log the review for popup display
+        const reviewLogEntry = {
+            reviewId: review.reviewId,
+            customerName: review.customerName,
+            extractedName: gptResult.firstName || 'N/A',
+            reviewText: review.reviewText || '',
+            rating: review.rating || 'N/A',
+            sentiment: gptResult.sentiment || 'Unknown',
+            complaintId: gptResult.complaintId || 'None',
+            confidence: 1.0, // GPT results are considered high confidence
+            selectedCategory: selectedCategory,
+            reply: finalReply,
+            replied: false,
+            includeInAutoReply: true,
+            restaurantName: currentRestaurantName
+        };
+        
+        processedReviewsLog.push(reviewLogEntry);
+        
+        // Update counter
+        onReplySuccess();
+        
+        // Post reply if auto-reply is enabled
+        if (config.autoReply && finalReply) {
+            await postReply(review, finalReply, config);
+            reviewLogEntry.replied = true;
+        }
+        
+        // Update log popup if open
+        if (document.getElementById('autozomato-log-popup')) {
+            renderLogPopupContent();
+        }
+        
+    } catch (error) {
+        console.error('[AutoZomato] Error in GPT mode processing:', error);
+    }
+}
+
+// Ollama Mode Processing - Multi-step approach  
+async function processReviewWithOllamaMode(review, config, promptContext, responseBank, onReplySuccess) {
+    try {
+        const model = promptContext.model || 'tinyllama';
+
+        let firstName = null;
+        let confidence = 0;
+        let sentiment = 'Neutral';
+        let complaintId = null;
+        
+        // Step 1: Name Extraction
+        let nameExtractionPrompt = '';
+        if (promptContext.systemPrompt) {
+            nameExtractionPrompt = promptContext.systemPrompt + '\n\n';
+        }
+        
+        nameExtractionPrompt += `Extract first name from customer name and return JSON only.
+
+CUSTOMER NAME: "${review.customerName}"
+
+RULES:
+- Clear real names (e.g., "Rahul Kumar") → extract first part ("Rahul")
+- Usernames with embedded names (e.g., "rahul123") → extract name part ("Rahul") 
+- Valid standalone names (e.g., "Zak") → use as-is
+- Generic/nonsensical names (e.g., "FD", "User123", "FoodLover") → return null
+- NEVER invent or guess names
+
+CONFIDENCE SCORING:
+- 0.9-1.0: Clear real names
+- 0.7-0.8: Names from usernames  
+- 0.5-0.6: Plausible standalone names
+- 0.0-0.4: Generic/unclear names (firstName = null)
+
+RESPOND WITH JSON ONLY - NO OTHER TEXT:
+{"firstName": "string or null", "confidence": number}
+
+EXAMPLES:
+Customer: "Jane Doe" → {"firstName": "Jane", "confidence": 0.95}
+Customer: "janes_eats" → {"firstName": "Jane", "confidence": 0.75}
+Customer: "S" → {"firstName": null, "confidence": 0.1}
+Customer: "Foodie123" → {"firstName": null, "confidence": 0.0}`;
+
+        // Process name extraction
+        try {
+            const nameResult = await makeAIRequest(nameExtractionPrompt, config);
+            console.log('[AutoZomato] Raw Ollama name extraction response:', nameResult.response);
+            
+            const nameData = cleanAndParseJSON(nameResult.response);
+            firstName = nameData.firstName;
+            confidence = nameData.confidence || 0;
+            
+            if (firstName && confidence === 0) {
+                const extracted = smartExtractFirstName(review.customerName);
+                if (extracted && extracted.name.toLowerCase() === firstName.toLowerCase()) {
+                    confidence = extracted.confidence;
+                }
+            }
+            console.log(`[AutoZomato] AI Name Extraction:`, { firstName, confidence });
+        } catch (nameError) {
+            console.warn(`[AutoZomato] Name extraction failed:`, nameError);
+            const extracted = smartExtractFirstName(review.customerName);
+            if (extracted) {
+                firstName = extracted.name;
+                confidence = extracted.confidence;
+            }
+        }
+
+        // Step 2: Review Analysis (Sentiment + Complaint)
+        let reviewAnalysisPrompt = '';
+        if (promptContext.systemPrompt) {
+            reviewAnalysisPrompt = promptContext.systemPrompt + '\n\n';
+        }
+        
+        reviewAnalysisPrompt += `Analyze restaurant review for sentiment and complaints. Return JSON only.
+
+REVIEW: "${review.reviewText || 'No text'}" (${review.rating}/5 stars)
+
+COMPLAINT DETECTION (be VERY conservative - only exact matches):
+1 = Wrong order ("wrong order", "different item", "not what I ordered")
+2 = Late delivery ("late delivery", "slow delivery", "took hours", "delayed")  
+3 = Spilled food ("spilled", "leaked", "broken container")
+4 = Wrong spice level ("too spicy", "not spicy", "instructions ignored")
+5 = Rude delivery person ("delivery person rude", "driver rude")
+6 = Missing cutlery ("no spoon", "missing spoon", "no cutlery")
+7 = Rude staff ("staff rude", "unprofessional staff")
+8 = Missing items ("missing item", "incomplete order", "forgot item")
+9 = Hair/foreign objects ("hair in food", "foreign object", "plastic in food")
+
+Return null if no EXACT phrase match found.
+General complaints like "bad food", "expensive", "cold" = null.
+
+SENTIMENT:
+- Positive: 4-5 stars OR words like "excellent", "great", "good"
+- Negative: 1-2 stars OR words like "bad", "terrible", "worst" 
+- Neutral: 3 stars OR words like "average", "okay", "fine"
+
+RESPOND WITH JSON ONLY - NO OTHER TEXT:
+{"complaintId": "string or null", "sentiment": "Positive|Negative|Neutral"}`;
+
+        // Process review analysis
+        try {
+            const reviewResult = await makeAIRequest(reviewAnalysisPrompt, config);
+            console.log('[AutoZomato] Raw Ollama review analysis response:', reviewResult.response);
+            
+            const reviewData = cleanAndParseJSON(reviewResult.response);
+            sentiment = reviewData.sentiment || 'Neutral';
+            complaintId = reviewData.complaintId;
+            
+            // Validate complaint detection
+            if (complaintId && complaintId !== null) {
+                const reviewText = (review.reviewText || '').toLowerCase();
+                const complaintTriggers = {
+                    '1': ['wrong order', 'different item', 'ordered chicken got mutton', 'not what i ordered', 'incorrect order'],
+                    '2': ['late delivery', 'slow delivery', 'took hours', 'very slow', 'delayed delivery', 'came late'],
+                    '3': ['spilled', 'leaked', 'broken container', 'container broke', 'packaging broke', 'food spilled'],
+                    '4': ['too spicy', 'not spicy', 'spice level', 'asked for mild', 'instructions ignored'],
+                    '5': ['delivery person rude', 'driver rude', 'delivery guy rude', 'courier rude'],
+                    '6': ['no spoon', 'missing spoon', 'no fork', 'no cutlery', 'missing cutlery'],
+                    '7': ['staff rude', 'restaurant staff rude', 'unprofessional staff', 'rude behavior'],
+                    '8': ['missing item', 'incomplete order', 'forgot item', 'didn\'t get', 'where is my'],
+                    '9': ['hair in food', 'foreign object', 'plastic in food', 'dirty food', 'contaminated']
+                };
+                
+                const isValidComplaint = complaintTriggers[complaintId] && 
+                    complaintTriggers[complaintId].some(trigger => reviewText.includes(trigger));
+                
+                if (!isValidComplaint) {
+                    console.warn(`[AutoZomato] AI hallucinated complaint "${complaintId}" - removing.`);
+                    complaintId = null;
+                }
+            }
+        } catch (reviewError) {
+            console.warn(`[AutoZomato] Review analysis failed:`, reviewError);
+            const fallback = fallbackAnalysis(review);
+            sentiment = fallback.sentiment;
+            complaintId = null;
+        }
+
+        // Combine results
+        let classification = {
+            sentiment: sentiment,
+            complaintId: complaintId,
+            firstName: firstName,
+            confidence: confidence
+        };
+
+        // Validate name extraction
+        if (classification.firstName && classification.firstName.length > 0) {
+            const customerNameLower = (review.customerName || '').toLowerCase();
+            const extractedNameLower = classification.firstName.toLowerCase();
+            
+            if (!customerNameLower.includes(extractedNameLower)) {
+                console.warn(`[AutoZomato] AI hallucinated name "${classification.firstName}" - removing.`);
+                classification.firstName = null;
+                classification.confidence = 0;
+            }
+        }
+
+        // Rating adjustment for sentiment mismatch
+        let adjustedRating = parseInt(review.rating) || 3;
+        if (adjustedRating >= 4 && classification.sentiment === 'Negative') {
+            adjustedRating = adjustedRating - 1;
+            console.log(`[AutoZomato] Adjusted rating from ${review.rating} to ${adjustedRating} due to negative sentiment`);
+        }
+
+        // Step 3: Generate Reply using response bank
+        let replyTemplate = '';
+        let selectedCategory = '';
+
+        if (classification.complaintId && responseBank.complaints.some(c => c.id === classification.complaintId)) {
+            const complaint = responseBank.complaints.find(c => c.id === classification.complaintId);
+            const options = complaint.responses;
+            replyTemplate = options[Math.floor(Math.random() * options.length)];
+            selectedCategory = `Complaint: ${complaint.storyName}`;
+        } else {
+            const rating = Math.floor(adjustedRating);
+            const category = responseBank.categories.find(c => c.storyName.startsWith(String(rating)));
+            
+            if (category) {
+                const hasReviewText = review.reviewText && review.reviewText.trim().length > 0;
+                const subCategoryKey = hasReviewText ? 'Written Review' : 'No Written Review';
+                const options = category.responses[subCategoryKey];
+                
+                if (options && options.length > 0) {
+                    replyTemplate = options[Math.floor(Math.random() * options.length)];
+                    selectedCategory = `${category.storyName} -> ${subCategoryKey}`;
+                }
+            }
+        }
+
+        if (!replyTemplate) {
+            console.warn('[AutoZomato] Could not find suitable reply template');
+            return;
+        }
+
+        // Step 4: Personalize reply
+        let finalReply = replyTemplate;
+        
+        if (classification.firstName && classification.confidence > 0.5) {
+            finalReply = finalReply.replace(/{CustomerName}/g, classification.firstName);
+        } else {
+            const extractedName = extractFirstName(review.customerName);
+            if (extractedName && extractedName.length > 1 && !extractedName.match(/\d/)) {
+                finalReply = finalReply.replace(/{CustomerName}/g, extractedName);
+            } else {
+                finalReply = finalReply.replace(/{CustomerName}/g, getRandomNeutralGreeting());
+            }
+        }
+        
+        finalReply = finalReply.replace(/,?\s?{CustomerName}/g, '');
+        finalReply = finalReply.replace(/{LocationName}/g, review.locationName || '');
+        finalReply = finalReply.replace(/\s+/g, ' ').trim();
+
+        // Step 5: Insert reply and post if auto-reply enabled
+        const textarea = review.replyTextarea;
+        const publishBtn = review.submitButton;
+        let repliedStatus = false;
+
+        if (textarea) {
+            textarea.value = finalReply;
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            
+            onReplySuccess();
+
+            if (config.autoReply && publishBtn) {
+                publishBtn.click();
+                repliedStatus = true;
+            }
+        }
+
+        // Step 6: Log the results
+        const reviewLogEntry = {
+            reviewId: review.reviewId,
+            customerName: review.customerName,
+            extractedName: (classification.firstName && classification.confidence > 0.5) ? 
+                          classification.firstName : extractFirstName(review.customerName) || 'N/A',
+            reviewText: review.reviewText || '',
+            rating: review.rating || 'N/A',
+            adjustedRating: adjustedRating !== (parseInt(review.rating) || 3) ? adjustedRating : null,
+            sentiment: classification.sentiment || 'Unknown',
+            complaintId: classification.complaintId || 'None',
+            confidence: classification.confidence || 0,
+            selectedCategory: selectedCategory || 'Unknown',
+            reply: finalReply,
+            replied: repliedStatus,
+            includeInAutoReply: true,
+            restaurantName: currentRestaurantName
+        };
+        
+        processedReviewsLog.push(reviewLogEntry);
+        
+        // Send real-time review data to background
+        chrome.runtime.sendMessage({
+            action: 'reviewProcessed',
+            reviewData: reviewLogEntry
+        });
+
+        // Update log popup if open
+        if (document.getElementById('autozomato-log-popup')) {
+            renderLogPopupContent();
+        }
+        
+    } catch (error) {
+        console.error('[AutoZomato] Error in Ollama mode processing:', error);
+    }
+}
+
+// Helper function to post replies
+async function postReply(review, reply, config) {
+    try {
+        const textarea = review.replyTextarea;
+        const publishBtn = review.submitButton;
+        
+        if (textarea && publishBtn) {
+            textarea.value = reply;
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            publishBtn.click();
+            console.log(`[AutoZomato] Posted reply for review ${review.reviewId}`);
+        }
+    } catch (error) {
+        console.error('[AutoZomato] Error posting reply:', error);
+    }
+}
+
+// GPT Single-Prompt Review Processing - ANALYSIS ONLY, NO REPLY GENERATION
+async function processReviewWithGPT(review, config) {
+    const gptPrompt = `You are an AI assistant for a restaurant review management system. Analyze this customer review and extract the following information in a single response.
+
+**RESTAURANT REVIEW ANALYSIS**
+
+Customer Name: "${review.customerName}"
+Review Text: "${review.reviewText}"
+Rating: ${review.rating}/5 stars
+
+**TASKS TO COMPLETE:**
+
+1. **EXTRACT FIRST NAME:**
+   - If the name is a clear real name (e.g., "Rahul Kumar"), extract the first part ("Rahul")
+   - If it's a username with an embedded name (e.g., "rahul123"), extract the name part ("Rahul") 
+   - If it's a valid standalone name (e.g., "Zak"), use that
+   - If the name is generic, nonsensical, or just initials (e.g., "FD", "User123", "FoodLover"), return null
+   - NEVER invent or guess a name - only extract what is clearly present
+
+2. **ANALYZE SENTIMENT:**
+   - Determine if the review is: Positive, Negative, or Neutral
+   - Base this on the overall tone and rating
+
+3. **DETECT SPECIFIC COMPLAINTS:**
+   - Only assign a complaint ID if the review EXPLICITLY mentions one of these specific issues:
+   - "1" = Incorrect Orders Received (wrong item delivered)
+   - "2" = Delivery Delays by Zomato (late delivery)
+   - "3" = Spill/Packaging Issues (food spilled, container broke)
+   - "4" = Cooking Instructions Not Followed (spice level, special requests ignored)
+   - "5" = Zomato Delivery-Related Issues (delivery person problems)
+   - "6" = Missing Cutlery (no spoon, fork, utensils)
+   - "7" = Rude Staff (restaurant staff behavior)
+   - "8" = Missing Item in Order (incomplete order)
+   - "9" = Food Safety – Foreign Materials (hair, plastic in food)
+   - Return null if no specific complaint is detected
+   - Be STRICT - general dissatisfaction like "food was bad" should NOT get a complaint ID
+
+**OUTPUT FORMAT:**
+Return ONLY a valid JSON object with these exact keys:
+{
+  "firstName": "string or null",
+  "sentiment": "Positive|Negative|Neutral", 
+  "complaintId": "string or null"
+}
+
+**EXAMPLES:**
+Customer: "john_foodie", Review: "Ordered chicken got mutton instead", Rating: 1
+→ {"firstName": "john", "sentiment": "Negative", "complaintId": "1"}
+
+Customer: "FoodLover123", Review: "Great taste and fast delivery!", Rating: 5  
+→ {"firstName": null, "sentiment": "Positive", "complaintId": null}
+
+Now analyze the review above and return the JSON response:`;
+
+    try {
+        const gptResult = await makeGPTRequest(gptPrompt, config.gptMode);
+        const parsedResult = cleanAndParseJSON(gptResult.response);
+        
+        console.log('[AutoZomato] GPT analysis result:', parsedResult);
+        
+        // Return only the analysis data - NO REPLY GENERATION
+        const result = {
+            firstName: parsedResult.firstName || null,
+            sentiment: parsedResult.sentiment || 'Neutral',
+            complaintId: parsedResult.complaintId || null
+        };
+        
+        return result;
+    } catch (error) {
+        console.error('[AutoZomato] GPT analysis failed:', error);
+        // Fallback to basic processing
+        return {
+            firstName: extractFirstNameFallback(review.customerName),
+            sentiment: 'Neutral',
+            complaintId: null
+        };
+    }
+}
+
+// Helper function for fallback name extraction
+function extractFirstNameFallback(customerName) {
+    if (!customerName || customerName.length < 2) return null;
+    
+    // Simple heuristics for name extraction
+    const name = customerName.trim();
+    
+    // If it looks like a real name (contains space)
+    if (name.includes(' ')) {
+        return name.split(' ')[0];
+    }
+    
+    // If it's a single word, check if it looks like a real name
+    if (name.length >= 3 && /^[A-Za-z]+$/.test(name) && 
+        !['user', 'customer', 'foodie', 'lover'].some(generic => 
+            name.toLowerCase().includes(generic))) {
+        return name;
+    }
+    
+    return null;
+}
+
+// AI Request Handler - supports both Ollama and GPT modes
+async function makeAIRequest(prompt, config) {
+    console.log('[AutoZomato] Making AI request with detailed config analysis:', {
+        configExists: !!config,
+        gptModeExists: !!config?.gptMode,
+        gptModeEnabled: config?.gptMode?.enabled,
+        hasApiKey: !!config?.gptMode?.apiKey,
+        apiKeyLength: config?.gptMode?.apiKey?.length || 0,
+        apiKeyValue: config?.gptMode?.apiKey ? `${config.gptMode.apiKey.substring(0, 10)}...` : 'null',
+        isPlaceholder: config?.gptMode?.apiKey === 'YOUR_OPENAI_API_KEY_HERE',
+        fullConfig: config
+    });
+    
+    // Check if GPT mode is enabled with valid API key
+    const hasValidApiKey = config?.gptMode?.apiKey && 
+                          config.gptMode.apiKey.trim() !== '' && 
+                          config.gptMode.apiKey !== 'YOUR_OPENAI_API_KEY_HERE' &&
+                          config.gptMode.apiKey.length > 10;
+    
+    if (config && config.gptMode && config.gptMode.enabled && hasValidApiKey) {
+        console.log('[AutoZomato] ✓ Using GPT mode:', config.gptMode.model);
+        return await makeGPTRequest(prompt, config.gptMode);
+    } else {
+        const failureReasons = [];
+        if (!config) failureReasons.push('no config');
+        if (!config?.gptMode) failureReasons.push('no GPT mode config');
+        if (!config?.gptMode?.enabled) failureReasons.push('GPT mode disabled');
+        if (!hasValidApiKey) failureReasons.push('invalid/missing API key');
+        
+        console.log('[AutoZomato] ✗ Using Ollama mode - GPT conditions failed:', failureReasons.join(', '));
+        console.log('[AutoZomato] → Additional debug info:', {
+            hasConfig: !!config,
+            hasGptMode: !!config?.gptMode,
+            isEnabled: config?.gptMode?.enabled,
+            hasApiKey: !!config?.gptMode?.apiKey,
+            hasValidApiKey: hasValidApiKey
+        });
+        return await makeOllamaRequest(prompt, config);
+    }
+}
+
+// GPT API Request
+async function makeGPTRequest(prompt, gptConfig) {
+    try {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${gptConfig.apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: gptConfig.model || 'gpt-4o-mini',
+                messages: [
+                    {
+                        role: 'user',
+                        content: prompt
+                    }
+                ],
+                max_tokens: 300, // Increased for longer replies
+                temperature: 0.7
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`GPT API error: ${response.status} ${response.statusText}`);
+        }
+
+        const result = await response.json();
+        return {
+            response: result.choices[0].message.content.trim(),
+            success: true
+        };
+    } catch (error) {
+        console.error('[AutoZomato] GPT request failed:', error);
+        throw error;
+    }
+}
+
+// Ollama API Request (existing functionality)
+async function makeOllamaRequest(prompt, config) {
+    const model = (config && config.promptContext && config.promptContext.model) || 'tinyllama';
+    
+    const requestBody = {
+        model: model,
+        prompt: prompt,
+        stream: false,
+        format: 'json',  // Force JSON output
+        options: {
+            temperature: 0.1,  // Lower temperature for more consistent JSON
+            num_predict: 100,  // Use num_predict instead of max_tokens for Ollama
+            top_p: 0.9,
+            repeat_penalty: 1.1,
+            stop: ["\n\n", "```", "---", "EXAMPLES", "**", "Now analyze"]  // Better stop tokens
+        }
+    };
+
+    try {
+        const response = await fetch('http://localhost:3000/ollama/api/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+            throw new Error(`Ollama API error: ${response.status} ${response.statusText}`);
+        }
+
+        const result = await response.json();
+        return {
+            response: result.response,
+            success: true
+        };
+    } catch (error) {
+        console.error('[AutoZomato] Ollama request failed:', error);
+        throw error;
+    }
+}
+
 // Auto-detection of page type
 function detectPageType() {
     const url = window.location.href;
@@ -1077,44 +1387,49 @@ if (document.readyState === 'loading') {
 }
 
 function initialize() {
-    // The config is now set on the window object by the background script before this script is executed.
-    const config = window.autoZomatoConfig || {};
-    console.log('[AutoZomato] Initializing with config:', config);
+    // Wait a bit for the config to be injected
+    setTimeout(() => {
+        const config = window.autoZomatoConfig || {};
+        console.log('[AutoZomato] Initializing with config:', config);
 
-    const pageType = detectPageType();
-    console.log('[AutoZomato] initialize() called. Page type:', pageType, 'URL:', window.location.href);
+        const pageType = detectPageType();
+        console.log('[AutoZomato] initialize() called. Page type:', pageType, 'URL:', window.location.href);
 
-    // Check if this is a new page/URL
-    const newUrl = window.location.href;
-    if (currentSessionUrl !== newUrl) {
-        console.log(`[AutoZomato] New page in initialize. Previous: ${currentSessionUrl}, Current: ${newUrl}`);
-        currentSessionUrl = newUrl;
-        
-        // Clear any previous session data when initializing on a new page
-        processedReviewsLog = [];
-        
-        // Close any existing log popup from previous page
-        const existingPopup = document.getElementById('autozomato-log-popup');
-        if (existingPopup) {
-            existingPopup.remove();
-            console.log('[AutoZomato] Cleared previous page popup and data');
+        // Check if this is a new page/URL
+        const newUrl = window.location.href;
+        if (currentSessionUrl !== newUrl) {
+            console.log(`[AutoZomato] New page in initialize. Previous: ${currentSessionUrl}, Current: ${newUrl}`);
+            currentSessionUrl = newUrl;
+            
+            // Clear any previous session data when initializing on a new page
+            processedReviewsLog = [];
+            currentRestaurantName = ''; // Reset restaurant name for new page
+            
+            // Close any existing log popup from previous page
+            const existingPopup = document.getElementById('autozomato-log-popup');
+            if (existingPopup) {
+                existingPopup.remove();
+                console.log('[AutoZomato] Cleared previous page popup and data');
+            }
+
+            // Reset the started flag for new page
+            window.__autozomatoStarted = undefined;
         }
 
-        // Reset the started flag for new page
-        window.__autozomatoStarted = undefined;
-    }
-
-    // Add visual indicator that extension is active
-    if (pageType === 'reviews' || pageType === 'restaurant') {
-        createOrUpdateIndicator('🤖 AutoZomato Initializing...');
-        // Auto-start review processing if not already started
-        if (typeof window.__autozomatoStarted === 'undefined') {
-            window.__autozomatoStarted = true;
-            console.log('[AutoZomato] Auto-starting review processing from initialize()');
-            // Pass the config to the processing function
-            startProcessing(config);
+        // Add visual indicator that extension is active
+        if (pageType === 'reviews' || pageType === 'restaurant') {
+            // Scrape restaurant name for display
+            currentRestaurantName = scrapeRestaurantName();
+            createOrUpdateIndicator(`🤖 ${currentRestaurantName} Initializing...`);
+            // Auto-start review processing if not already started
+            if (typeof window.__autozomatoStarted === 'undefined') {
+                window.__autozomatoStarted = true;
+                console.log('[AutoZomato] Auto-starting review processing from initialize()');
+                // Pass the config to the processing function
+                startProcessing(config.promptContext || {});
+            }
         }
-    }
+    }, 100); // Small delay to ensure config is set
 }
 
 function createOrUpdateIndicator(text, color = '#667eea') {
@@ -1131,15 +1446,30 @@ function createOrUpdateIndicator(text, color = '#667eea') {
             right: 10px;
             background: #667eea; /* default color */
             color: white;
-            padding: 5px 10px;
-            border-radius: 5px;
-            font-size: 12px;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 13px;
             z-index: 10000;
             font-family: Arial, sans-serif;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-            transition: background-color 0.5s ease;
-            cursor: pointer; /* Add cursor pointer */
+            box-shadow: 0 3px 8px rgba(0,0,0,0.3);
+            transition: all 0.3s ease;
+            cursor: pointer;
+            border: 2px solid rgba(255,255,255,0.2);
+            max-width: 300px;
+            word-wrap: break-word;
+            font-weight: 500;
         `;
+        
+        // Add hover effect
+        indicator.addEventListener('mouseenter', function() {
+            this.style.transform = 'translateY(-2px)';
+            this.style.boxShadow = '0 5px 12px rgba(0,0,0,0.4)';
+        });
+        
+        indicator.addEventListener('mouseleave', function() {
+            this.style.transform = 'translateY(0)';
+            this.style.boxShadow = '0 3px 8px rgba(0,0,0,0.3)';
+        });
         
         // Ensure DOM is ready before appending
         if (document.body) {

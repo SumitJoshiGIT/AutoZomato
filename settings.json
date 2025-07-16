@@ -6,7 +6,15 @@
     "systemPrompt": "You are a helpful restaurant manager writing polite and professional replies to customer reviews. Keep responses short, grateful, and address any specific concerns mentioned.",
     "replyPrompt": "Write a polite and professional reply to this restaurant review",
     "maxTokens": 150,
-    "temperature": 0.7
+    "temperature": 0.7,
+    "model": "tinyllama"
+  },
+  "gptMode": {
+    "enabled": true,
+    "apiKey": "YOUR_OPENAI_API_KEY_HERE",
+    "keyName": "AutoZomato GPT Key",
+    "model": "gpt-4o-mini",
+    "baseUrl": "https://api.openai.com/v1"
   },
   "processingSettings": {
     "maxConcurrentTabs": 7,
