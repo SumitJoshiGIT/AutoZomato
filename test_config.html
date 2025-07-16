@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Config Test</title>
+</head>
+<body>
+    <h1>AutoZomato Config Test</h1>
+    <p>Open Chrome DevTools Console to see the config debugging info.</p>
+    
+    <button onclick="testConfig()">Test Config</button>
+    <button onclick="testAutoReply()">Test Auto Reply Logic</button>
+    
+    <div id="results"></div>
+    
+    <script>
+        // Simulate config injection
+        window.autoZomatoConfig = {
+            autoReply: true,
+            autoClose: false,
+            urls: ['https://example.com'],
+            promptContext: { test: true }
+        };
+        
+        function testConfig() {
+            console.log('Testing config availability...');
+            console.log('window.autoZomatoConfig:', window.autoZomatoConfig);
+            
+            const results = document.getElementById('results');
+            results.innerHTML = `
+                <h3>Config Test Results:</h3>
+                <pre>${JSON.stringify(window.autoZomatoConfig, null, 2)}</pre>
+                <p>Auto Reply: ${window.autoZomatoConfig?.autoReply ? 'ENABLED' : 'DISABLED'}</p>
+                <p>Auto Close: ${window.autoZomatoConfig?.autoClose ? 'ENABLED' : 'DISABLED'}</p>
+            `;
+        }
+        
+        function testAutoReply() {
+            console.log('Testing auto reply logic...');
+            
+            // Simulate the auto-reply check from content script
+            if (window.autoZomatoConfig && window.autoZomatoConfig.autoReply) {
+                console.log('✅ Auto-reply would be triggered!');
+                document.getElementById('results').innerHTML += '<p style="color: green;">✅ Auto-reply logic working!</p>';
+            } else {
+                console.log('❌ Auto-reply would NOT be triggered');
+                document.getElementById('results').innerHTML += '<p style="color: red;">❌ Auto-reply logic failed</p>';
+            }
+        }
+        
+        // Auto-test on load
+        setTimeout(() => {
+            testConfig();
+            testAutoReply();
+        }, 100);
+    </script>
+</body>
+</html>

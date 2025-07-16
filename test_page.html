@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoZomato Test</title>
+</head>
+<body>
+    <h1>AutoZomato Test Page</h1>
+    <p>Open the browser console to see debug output.</p>
+    
+    <script>
+        // Mock chrome API for testing
+        window.chrome = {
+            storage: {
+                local: {
+                    get: (keys) => Promise.resolve({}),
+                    set: (data) => Promise.resolve()
+                }
+            },
+            runtime: {
+                sendMessage: (message) => {
+                    console.log('Mock sendMessage called with:', message);
+                    return Promise.resolve({ success: true });
+                },
+                onMessage: {
+                    addListener: (callback) => {
+                        console.log('Mock onMessage listener added');
+                    }
+                }
+            }
+        };
+        
+        console.log('Mock Chrome API loaded');
+    </script>
+    
+    <div id="test-container">
+        <button onclick="testPageController()">Test Page Controller</button>
+    </div>
+    
+    <script>
+        function testPageController() {
+            if (window.pageController) {
+                console.log('PageController is available:', window.pageController);
+                
+                // Test adding a group
+                window.pageController.groups = [
+                    {
+                        id: 'test-1',
+                        name: 'Test Group 1',
+                        urls: ['https://example.com/1', 'https://example.com/2']
+                    }
+                ];
+                
+                console.log('Added test group, rendering...');
+                window.pageController.render();
+                
+                // Test URL selection
+                setTimeout(() => {
+                    console.log('Testing URL selection...');
+                    window.pageController.toggleUrlSelection('test-1', 'https://example.com/1');
+                }, 1000);
+                
+            } else {
+                console.error('PageController not available on window');
+            }
+        }
+    </script>
+</body>
+</html>

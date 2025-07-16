@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoZomato Control Panel</title>
+    <link rel="stylesheet" href="page.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="logo">
+                <img src="../../icons/icon48.png" alt="AutoZomato">
+                <h1>AutoZomato Control Panel</h1>
+            </div>
+            <div class="status" id="status">Ready</div>
+        </header>
+
+        <main class="content">
+            <!-- Groups Management Section -->
+            <section class="section">
+                <h2>Groups Management</h2>
+                <div class="groups-container">
+                    <div class="groups-header">
+                        <button id="selectAllGroups" class="btn btn-secondary">Select All</button>
+                        <button id="deselectAllGroups" class="btn btn-secondary">Deselect All</button>
+                        <button id="addGroupBtn" class="btn btn-primary">Add New Group</button>
+                    </div>
+                    <div id="groupsList" class="groups-list">
+                        <!-- Groups will be populated here -->
+                    </div>
+                </div>
+            </section>
+
+            <!-- URL Management Section -->
+            <section class="section">
+                <h2>URL Management</h2>
+                <div class="url-container">
+                    <div class="url-header">
+                        <select id="groupSelect" class="form-select">
+                            <option value="">Select a group...</option>
+                        </select>
+                        <button id="addUrlBtn" class="btn btn-primary">Add URL</button>
+                        <button id="selectAllUrlsBtn" class="btn btn-secondary">Select All URLs</button>
+                        <button id="deselectAllUrlsBtn" class="btn btn-secondary">Deselect All URLs</button>
+                    </div>
+                    <div id="urlsByGroupContainer" class="urls-by-group-container">
+                        <!-- URLs grouped by groups will be populated here -->
+                    </div>
+                </div>
+            </section>
+
+
+
+            <!-- Settings Section -->
+            <section class="section">
+                <h2>Processing Settings</h2>
+                <div class="settings-container">
+                    <div class="settings-grid">
+                        <div class="setting-item">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="autoReplyToggle" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <div class="setting-info">
+                                <label for="autoReplyToggle">Auto Reply</label>
+                                <small>Automatically generate and send replies to reviews</small>
+                            </div>
+                        </div>
+                        <div class="setting-item">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="autoCloseToggle">
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <div class="setting-info">
+                                <label for="autoCloseToggle">Auto Close Tabs</label>
+                                <small>Automatically close tabs after processing</small>
+                            </div>
+                        </div>
+                        <div class="setting-item">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="gptModeToggle">
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <div class="setting-info">
+                                <label for="gptModeToggle">GPT Mode</label>
+                                <small>Use OpenAI GPT-4o Mini instead of local Ollama</small>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- GPT Configuration Panel -->
+                    <div id="gptConfigPanel" class="gpt-config-panel" style="display: none;">
+                        <h3>GPT Configuration</h3>
+                        <div class="config-grid">
+                            <div class="config-item">
+                                <label for="gptKeyName">Key Name:</label>
+                                <input type="text" id="gptKeyName" placeholder="e.g., AutoZomato GPT Key" value="AutoZomato GPT Key">
+                            </div>
+                            <div class="config-item">
+                                <label for="gptApiKey">OpenAI API Key:</label>
+                                <input type="password" id="gptApiKey" placeholder="sk-...">
+                                <small>Your API key will be stored locally and used for GPT requests</small>
+                            </div>                        <div class="config-item">
+                            <label for="gptModel">Model:</label>
+                            <select id="gptModel">
+                                <option value="gpt-4o-mini">GPT-4o Mini (Recommended)</option>
+                                <option value="gpt-4">GPT-4</option>
+                                <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                            </select>
+                        </div>
+                        <div class="config-item">
+                            <button id="testGptConnection" class="test-button">Test Connection</button>
+                        </div>
+                    </div>
+                    <div class="gpt-status">
+                        <span id="gptStatus">Not configured</span>
+                    </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Processing Section -->
+            <section class="section">
+                <h2>Processing Control</h2>
+                <div class="processing-container">
+                    <div class="processing-info">
+                        <div class="info-item">
+                            <label>Selected Groups:</label>
+                            <span id="selectedGroupsCount">0</span>
+                        </div>
+                        <div class="info-item">
+                            <label>Selected URLs:</label>
+                            <span id="selectedUrlsCount">0</span>
+                        </div>
+                        <div class="info-item">
+                            <label>Total URLs:</label>
+                            <span id="totalUrlsCount">0</span>
+                        </div>
+                        <div class="info-item">
+                            <label>Last Run:</label>
+                            <span id="lastRunDate">Never</span>
+                        </div>
+                        <div class="info-item">
+                            <label>Auto Reply:</label>
+                            <span id="currentAutoReply" class="setting-status">OFF</span>
+                        </div>
+                        <div class="info-item">
+                            <label>Auto Close:</label>
+                            <span id="currentAutoClose" class="setting-status">OFF</span>
+                        </div>
+                    </div>
+                    
+                    <div class="processing-actions">
+                        <button id="startProcessing" class="btn btn-primary btn-large">
+                            🚀 Start Processing
+                        </button>
+                        <button id="stopProcessing" class="btn btn-danger" style="display: none;">
+                            ⏹️ Stop Processing
+                        </button>
+                    </div>
+                    
+                    <div id="processingStatus" class="processing-status" style="display: none;">
+                        <div class="progress-bar">
+                            <div id="progressFill" class="progress-fill"></div>
+                        </div>
+                        <div id="statusText" class="status-text">Initializing...</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Results Section -->
+            <section class="section">
+                <h2>Processing Results</h2>
+                <div id="resultsContainer" class="results-container">
+                    <div class="empty-state">
+                        <p>No processing results yet. Start processing to see results here.</p>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Modals -->
+    <div id="addGroupModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add New Group</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="groupName">Group Name:</label>
+                    <input type="text" id="groupName" class="form-input" placeholder="Enter group name">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="cancelGroupBtn" class="btn btn-secondary">Cancel</button>
+                <button id="saveGroupBtn" class="btn btn-primary">Save Group</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="addUrlModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add New URL</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="urlInput">URL:</label>
+                    <input type="url" id="urlInput" class="form-input" placeholder="https://example.com">
+                </div>
+                <div class="form-group">
+                    <label for="urlGroup">Group:</label>
+                    <select id="urlGroup" class="form-select">
+                        <option value="">Select a group...</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="cancelUrlBtn" class="btn btn-secondary">Cancel</button>
+                <button id="saveUrlBtn" class="btn btn-primary">Save URL</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="page.js"></script>
+</body>
+</html>
