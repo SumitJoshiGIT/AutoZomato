@@ -12,6 +12,7 @@ class PageController {
         this.selectedGroups = new Set();
         this.currentGroupId = null;
         this.restaurantNameMap = new Map();
+        this.restaurantProcessingMap = new Map(); // New: Track restaurant processing status to prevent duplicates
         this.lastRunDate = null;
         
         // Initialize the new ReviewResultsTable component
@@ -830,14 +831,15 @@ class PageController {
         // 2. INDIVIDUAL REVIEW RESULTS TABLE: Initialize the new component for individual reviews
         this.initializeReviewResultsComponent();
         
-        // Create initial placeholder entries for each URL to show in processing table
+        // Create initial placeholder entries for each URL in the restaurant processing map
         selectedUrls.forEach((url, index) => {
-            this.tabResults.push({
+            const restaurantName = this.restaurantNameMap.get(url) || 'Loading restaurant name...';
+            this.restaurantProcessingMap.set(url, {
                 tabId: `temp-${index}`, // Temporary ID until real tab ID is available
                 url: url,
-                restaurantName: this.restaurantNameMap.get(url) || 'Loading restaurant name...',
+                restaurantName: restaurantName,
                 status: 'starting',
-                isLiveUpdate: true,
+                isLiveUpdate: false,
                 progress: { current: 0, total: 0 },
                 reviewCount: 0,
                 repliesCount: 0,
@@ -1971,7 +1973,7 @@ class PageController {
                 this.elements.gptStatus.textContent = `✅ Connected: ${this.elements.gptModel.value}`;
                 this.elements.gptStatus.className = 'gpt-status configured';
                 console.log('GPT test successful:', result.choices[0].message.content);
-            } else {
+                       } else {
                 const errorText = await response.text();
                 console.error('GPT test failed:', response.status, errorText);
                 if (response.status === 401) {
@@ -2267,6 +2269,9 @@ class PageController {
             </div>
         `;
         
+        // Initialize restaurant tracking map to prevent duplicates
+        this.restaurantProcessingMap = new Map(); // URL -> processing data
+        
         // Insert after the processing status element
         if (this.elements.processingStatus) {
             this.elements.processingStatus.insertAdjacentHTML('afterend', processingSectionHtml);
@@ -2276,7 +2281,7 @@ class PageController {
             // Show the processing table
             this.elements.processingTable.style.display = 'block';
             
-            console.log('[PageController] Processing table initialized and visible');
+            console.log('[PageController] Processing table initialized with deduplication map');
         }
     }
 
@@ -2285,24 +2290,28 @@ class PageController {
         // This method populates the processing status table with restaurant progress information
         if (!this.elements.processingTableBody) return;
         
-        if (!this.tabResults || this.tabResults.length === 0) {
+        if (!this.restaurantProcessingMap || this.restaurantProcessingMap.size === 0) {
             this.elements.processingTable.style.display = 'none';
             return;
         }
         
         this.elements.processingTable.style.display = 'block';
         
-        this.elements.processingTableBody.innerHTML = this.tabResults.map(result => {
+        // Convert map to array for rendering, ensuring no duplicates
+        const processingEntries = Array.from(this.restaurantProcessingMap.values());
+        
+        this.elements.processingTableBody.innerHTML = processingEntries.map(result => {
             const statusIcon = result.status === 'completed' ? '✅' : 
                              result.status === 'processing' ? '🔄' : 
-                             result.status === 'starting' ? '⏳' : '⏳';
+                             result.status === 'starting' ? '⏳' : 
+                             result.status === 'error' ? '❌' : '⏳';
             const progress = result.progress && result.progress.total > 0 ? 
                 `${result.progress.current}/${result.progress.total}` : '0/0';
             const percentage = result.progress && result.progress.total > 0 ? 
                 Math.round((result.progress.current / result.progress.total) * 100) : 0;
             
             return `
-                <tr class="processing-row ${result.status}">
+                <tr class="processing-row ${result.status}" data-url="${result.url}">
                     <td>${result.restaurantName || 'Loading...'}</td>
                     <td><a href="${result.url}" target="_blank" class="url-link">${new URL(result.url).hostname}</a></td>
                     <td>
@@ -2323,6 +2332,8 @@ class PageController {
                 </tr>
             `;
         }).join('');
+        
+        console.log(`[PageController] Rendered processing table with ${processingEntries.length} unique restaurants`);
     }
 
     initializeReviewsTable() {
@@ -2390,47 +2401,99 @@ class PageController {
     }
 
     updateRealtimeProgressDisplay(tabId, url, restaurantName, progress, status) {
-        console.log('[Dashboard] Updating real-time progress display:', { tabId, restaurantName, progress, status });
-        
-        // Initialize tabResults array if it doesn't exist
-        if (!this.tabResults) {
-            this.tabResults = [];
+        console.log('[Dashboard] Updating real-time progress display:', { tabId, url, restaurantName, progress, status });
+        if (!this.restaurantProcessingMap) {
+            this.restaurantProcessingMap = new Map();
         }
-        
-        // Find existing tab result by tabId OR by URL (in case we're transitioning from placeholder)
-        let existingIndex = this.tabResults.findIndex(result => result.tabId === tabId || result.url === url);
-        
-        if (existingIndex >= 0) {
-            // Update existing tab with live progress
-            this.tabResults[existingIndex] = {
-                ...this.tabResults[existingIndex],
-                tabId, // Update to real tab ID (in case it was placeholder)
-                restaurantName,
-                url,
-                status,
-                progress,
-                isLiveUpdate: true,
-                reviewCount: progress.total,
-                repliesCount: progress.current,
-                timestamp: this.tabResults[existingIndex].timestamp // Keep original start time
-            };
-        } else {
-            // Create new tab entry for live progress tracking
-            this.tabResults.push({
-                tabId,
-                url,
-                restaurantName,
-                status,
-                progress,
-                isLiveUpdate: true,
-                reviewCount: progress.total,
-                repliesCount: progress.current,
-                timestamp: new Date().toISOString()
-            });
-        }
-        
-        // Re-render the processing table to show live progress
+        const urlKey = this.normalizeUrl(url);
+        const existingData = this.restaurantProcessingMap.get(urlKey) || {};
+        const updatedData = {
+            ...existingData,
+            tabId,
+            url: urlKey,
+            restaurantName: restaurantName || existingData.restaurantName || 'Loading...',
+            status,
+            progress: progress || existingData.progress || { current: 0, total: 0 },
+            isLiveUpdate: true,
+            reviewCount: progress?.total || existingData.reviewCount || 0,
+            repliesCount: progress?.current || existingData.repliesCount || 0,
+            timestamp: existingData.timestamp || new Date().toISOString(),
+            lastUpdated: new Date().toISOString()
+        };
+        this.restaurantProcessingMap.set(urlKey, updatedData);
         this.renderProcessingTable();
+    }
+
+    // Mark a restaurant as completed in the processing table
+    markRestaurantCompleted(url, restaurantName, finalStats) {
+        if (!this.restaurantProcessingMap) {
+            this.restaurantProcessingMap = new Map();
+        }
+        const urlKey = this.normalizeUrl(url);
+        const existingData = this.restaurantProcessingMap.get(urlKey) || {};
+        const completedData = {
+            ...existingData,
+            url: urlKey,
+            restaurantName: restaurantName || existingData.restaurantName || 'Unknown',
+            status: 'completed',
+            progress: finalStats?.progress || existingData.progress || { current: 0, total: 0 },
+            reviewCount: finalStats?.totalReviews || existingData.reviewCount || 0,
+            repliesCount: finalStats?.repliesGenerated || existingData.repliesCount || 0,
+            isLiveUpdate: false,
+            completedAt: new Date().toISOString()
+        };
+        this.restaurantProcessingMap.set(urlKey, completedData);
+        this.renderProcessingTable();
+        console.log(`[Dashboard] Marked restaurant as completed: ${restaurantName} (${urlKey})`);
+    }
+
+    // Mark a restaurant with error status
+    markRestaurantError(url, restaurantName, errorMessage) {
+        if (!this.restaurantProcessingMap) {
+            this.restaurantProcessingMap = new Map();
+        }
+        
+        const existingData = this.restaurantProcessingMap.get(url) || {};
+        
+        const errorData = {
+            ...existingData,
+            url,
+            restaurantName: restaurantName || existingData.restaurantName || 'Unknown',
+            status: 'error',
+            errorMessage: errorMessage,
+            isLiveUpdate: false,
+            errorAt: new Date().toISOString()
+        };
+        
+        this.restaurantProcessingMap.set(url, errorData);
+        this.renderProcessingTable();
+        
+        console.log(`[Dashboard] Marked restaurant with error: ${restaurantName} (${url}) - ${errorMessage}`);
+    }
+
+    // Clear the processing table (when starting new processing)
+    clearProcessingTable() {
+        if (this.restaurantProcessingMap) {
+            this.restaurantProcessingMap.clear();
+        }
+        if (this.elements.processingTableBody) {
+            this.elements.processingTableBody.innerHTML = '';
+        }
+        console.log('[Dashboard] Processing table cleared');
+    }
+
+    // Utility: Normalize URL for deduplication (removes trailing slash, lowercases, strips query/hash)
+    normalizeUrl(url) {
+        try {
+            const u = new URL(url);
+            u.hash = '';
+            u.search = '';
+            let norm = u.toString();
+            if (norm.endsWith('/')) norm = norm.slice(0, -1);
+            return norm.toLowerCase();
+        } catch (e) {
+            return url ? url.trim().toLowerCase().replace(/\/$/, '') : '';
+        }
     }
 }
 

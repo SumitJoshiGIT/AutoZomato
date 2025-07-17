@@ -325,25 +325,43 @@ async function startProcessing(promptContext) {
         const MAX_LOAD_MORE_FAILURES = 3;
 
         // If there are still unanswered reviews, attempt to load more
+        console.log(`[AutoZomato] Checking if more reviews need to be loaded:`, {
+            totalProcessedCount,
+            unansweredCount,
+            loadMoreFailures,
+            shouldContinue: unansweredCount !== null && totalProcessedCount < unansweredCount && loadMoreFailures < MAX_LOAD_MORE_FAILURES
+        });
+        
         while (unansweredCount !== null && totalProcessedCount < unansweredCount && loadMoreFailures < MAX_LOAD_MORE_FAILURES) {
-            console.log(`[AutoZomato] Processed ${totalProcessedCount}/${unansweredCount}. Attempting to load more...`);
+            console.log(`[AutoZomato] 🔄 Processed ${totalProcessedCount}/${unansweredCount}. Attempting to load more reviews...`);
             
             const currentReviewCount = (await scrapeReviews()).length;
+            console.log(`[AutoZomato] Current scraped review count before load more: ${currentReviewCount}`);
+            
             const newReviewCount = await loadMoreAndCheck(currentReviewCount);
+            console.log(`[AutoZomato] Review count after load more attempt: ${newReviewCount}`);
 
             if (newReviewCount > currentReviewCount) {
                 // Successfully loaded more reviews
                 loadMoreFailures = 0; // Reset failure count
+                console.log(`[AutoZomato] ✅ Successfully loaded ${newReviewCount - currentReviewCount} new reviews`);
+                
                 const allReviews = await scrapeReviews();
                 const newReviews = allReviews.slice(currentReviewCount); // Process only the new ones
                 
-                console.log(`[AutoZomato] Found ${newReviews.length} new reviews after loading more.`);
+                console.log(`[AutoZomato] Processing ${newReviews.length} new reviews from the loaded batch`);
                 await replyToReviews(newReviews, promptContext, onReplySuccess);
                 totalProcessedCount += newReviews.length;
+                
+                console.log(`[AutoZomato] Updated total processed count: ${totalProcessedCount}`);
             } else {
                 // Failed to load new reviews
                 loadMoreFailures++;
-                console.log(`[AutoZomato] Load more did not yield new reviews. Failure attempt ${loadMoreFailures}/${MAX_LOAD_MORE_FAILURES}.`);
+                console.log(`[AutoZomato] ❌ Load more did not yield new reviews. Failure attempt ${loadMoreFailures}/${MAX_LOAD_MORE_FAILURES}`);
+                
+                if (loadMoreFailures >= MAX_LOAD_MORE_FAILURES) {
+                    console.log('[AutoZomato] 🛑 Reached maximum load more failures, stopping attempts');
+                }
             }
         }
 
@@ -537,27 +555,128 @@ async function clickUnansweredTabAndExtractCounts() {
 }
 
 async function loadAllReviews() {
+    console.log('[AutoZomato] loadAllReviews() started - attempting to load all reviews at once');
+    
     let loadMoreBtn;
     let tries = 0;
-    while ((loadMoreBtn = document.querySelector('section.load-more, section.zs-load-more, section.btn.load-more')) && loadMoreBtn.offsetParent !== null && tries < 20) {
-        console.log('[AutoZomato] Clicking Load more...');
+    const maxTries = 20;
+    
+    while (tries < maxTries) {
+        // Enhanced load more button detection
+        const selectors = [
+            'section.load-more',
+            'section.zs-load-more', 
+            'section.btn.load-more',
+            '.load-more',
+            '[class*="load-more"]',
+            '[class*="loadmore"]'
+        ];
+        
+        loadMoreBtn = null;
+        for (const selector of selectors) {
+            loadMoreBtn = document.querySelector(selector);
+            if (loadMoreBtn && loadMoreBtn.offsetParent !== null) {
+                console.log(`[AutoZomato] Found visible load more button with selector: ${selector}`);
+                break;
+            }
+        }
+        
+        if (!loadMoreBtn || loadMoreBtn.offsetParent === null) {
+            console.log(`[AutoZomato] No more load more buttons found after ${tries} clicks`);
+            break;
+        }
+        
+        console.log(`[AutoZomato] Clicking Load more button (attempt ${tries + 1}/${maxTries})...`);
+        console.log(`[AutoZomato] Button details:`, {
+            tagName: loadMoreBtn.tagName,
+            className: loadMoreBtn.className,
+            textContent: loadMoreBtn.textContent?.trim(),
+            disabled: loadMoreBtn.disabled
+        });
+        
         loadMoreBtn.click();
         await new Promise(function(resolve) { setTimeout(resolve, 1500); });
         tries++;
+        
+        // Log current review count after each click
+        const currentReviewCount = document.querySelectorAll('.res-review').length;
+        console.log(`[AutoZomato] Review count after click ${tries}: ${currentReviewCount}`);
     }
+    
     if (tries > 0) {
-        console.log('[AutoZomato] All reviews loaded after', tries, 'clicks');
+        console.log(`[AutoZomato] ✅ All reviews loaded after ${tries} load more clicks`);
+    } else {
+        console.log('[AutoZomato] ⚠️ No load more buttons found - all reviews may already be loaded');
     }
+    
+    const finalReviewCount = document.querySelectorAll('.res-review').length;
+    console.log(`[AutoZomato] Final review count after loadAllReviews(): ${finalReviewCount}`);
 }
 
 async function loadMoreAndCheck(prevCount) {
-    const loadMoreBtn = document.querySelector('section.load-more, section.zs-load-more, section.btn.load-more');
-    if (loadMoreBtn && loadMoreBtn.offsetParent !== null) {
-        loadMoreBtn.click();
-        await new Promise(function(resolve) { setTimeout(resolve, 1500); });
+    console.log('[AutoZomato] loadMoreAndCheck called with prevCount:', prevCount);
+    
+    // Enhanced load more button detection
+    const selectors = [
+        'section.load-more',
+        'section.zs-load-more', 
+        'section.btn.load-more',
+        '.load-more',
+        '[class*="load-more"]',
+        '[class*="loadmore"]',
+        'button[class*="load"]',
+        'a[class*="load"]'
+    ];
+    
+    let loadMoreBtn = null;
+    let usedSelector = '';
+    
+    for (const selector of selectors) {
+        loadMoreBtn = document.querySelector(selector);
+        if (loadMoreBtn) {
+            usedSelector = selector;
+            console.log(`[AutoZomato] Found load more button with selector: ${selector}`);
+            break;
+        }
     }
+    
+    if (!loadMoreBtn) {
+        console.log('[AutoZomato] No load more button found with any selector');
+        console.log('[AutoZomato] Available buttons on page:', 
+            Array.from(document.querySelectorAll('button, .btn, section')).map(el => ({
+                tagName: el.tagName,
+                className: el.className,
+                textContent: el.textContent?.trim()?.substring(0, 50),
+                visible: el.offsetParent !== null
+            })).slice(0, 10) // Show first 10 for debugging
+        );
+    } else {
+        console.log('[AutoZomato] Load more button details:', {
+            selector: usedSelector,
+            tagName: loadMoreBtn.tagName,
+            className: loadMoreBtn.className,
+            textContent: loadMoreBtn.textContent?.trim(),
+            visible: loadMoreBtn.offsetParent !== null,
+            disabled: loadMoreBtn.disabled,
+            style: loadMoreBtn.style.cssText
+        });
+    }
+    
+    if (loadMoreBtn && loadMoreBtn.offsetParent !== null) {
+        console.log('[AutoZomato] Clicking load more button...');
+        loadMoreBtn.click();
+        console.log('[AutoZomato] Load more button clicked, waiting 1.5s for content to load...');
+        await new Promise(function(resolve) { setTimeout(resolve, 1500); });
+    } else {
+        console.log('[AutoZomato] Load more button not clickable or not visible');
+    }
+    
     const reviewBlocks = document.querySelectorAll('.res-review');
-    return reviewBlocks.length;
+    const newCount = reviewBlocks.length;
+    
+    console.log(`[AutoZomato] Review count after load more attempt: ${prevCount} -> ${newCount} (difference: ${newCount - prevCount})`);
+    
+    return newCount;
 }
 
 async function scrapeReviews() {
