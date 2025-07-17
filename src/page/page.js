@@ -125,9 +125,6 @@ class PageController {
         this.elements.saveUrlBtn.addEventListener('click', () => this.saveNewUrl());
         this.elements.cancelUrlBtn.addEventListener('click', () => this.hideAddUrlModal());
         
-        // Group filter dropdown
-        this.elements.groupSelect.addEventListener('change', () => this.handleGroupFilter());
-        
         // Processing
         this.elements.startProcessing.addEventListener('click', () => this.startProcessing());
         this.elements.stopProcessing.addEventListener('click', () => this.stopProcessing());
@@ -196,49 +193,6 @@ class PageController {
         });
     }
 
-    handleTabResultReady(tabResult) {
-        console.log('[PageController] *** TAB RESULT READY ***', {
-            tabId: tabResult.tabId,
-            url: tabResult.url,
-            restaurantName: tabResult.restaurantName,
-            reviewCount: tabResult.reviewCount,
-            repliesCount: tabResult.repliesCount,
-            detailedLogLength: tabResult.detailedReviewLog?.length || 0
-        });
-
-        // Process all detailed review logs from this tab
-        if (tabResult.detailedReviewLog && Array.isArray(tabResult.detailedReviewLog)) {
-            console.log('[PageController] Processing', tabResult.detailedReviewLog.length, 'reviews from tab completion');
-            
-            tabResult.detailedReviewLog.forEach((reviewData, index) => {
-                // Ensure the review has the restaurant name and URL
-                const enrichedReviewData = {
-                    ...reviewData,
-                    restaurantName: reviewData.restaurantName || tabResult.restaurantName,
-                    url: reviewData.url || tabResult.url,
-                    tabId: tabResult.tabId
-                };
-
-                console.log(`[PageController] Processing review ${index + 1}/${tabResult.detailedReviewLog.length}:`, {
-                    reviewId: enrichedReviewData.reviewId,
-                    customerName: enrichedReviewData.customerName,
-                    replied: enrichedReviewData.replied
-                });
-
-                // Add to the ReviewResultsTable component
-                if (this.reviewResultsTable) {
-                    this.reviewResultsTable.addReview(enrichedReviewData);
-                } else {
-                    console.error('[PageController] ReviewResultsTable component not initialized!');
-                }
-            });
-
-            console.log('[PageController] *** TAB RESULT PROCESSING COMPLETE ***');
-        } else {
-            console.warn('[PageController] No detailed review log found in tab result');
-        }
-    }
-
     setupMessageListener() {
         chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             console.log('[Dashboard] Received message:', message.action, message);
@@ -275,12 +229,6 @@ class PageController {
                     break;
                 case 'log':
                     this.addLogEntry(message.message, message.type, message.timestamp);
-                    break;
-                case 'downloadResults':
-                    // Handle consolidated download request
-                    console.log('[Dashboard] Received download request:', message.consolidatedData);
-                    this.handleConsolidatedDownload(message.consolidatedData);
-                    sendResponse({ success: true });
                     break;
                 default:
                     console.log('[Dashboard] Unhandled message action:', message.action);
@@ -440,26 +388,9 @@ class PageController {
             return;
         }
         
-        // Get the selected group filter
-        const selectedGroupId = this.elements.groupSelect.value;
-        
-        // Filter groups based on selection
-        const groupsToShow = selectedGroupId 
-            ? this.groups.filter(group => group.id === selectedGroupId)
-            : this.groups;
-        
-        if (groupsToShow.length === 0) {
-            this.elements.urlsByGroupContainer.innerHTML = `
-                <div class="empty-state">
-                    <p>No groups match the selected filter.</p>
-                </div>
-            `;
-            return;
-        }
-        
         let globalUrlIndex = 1;
         
-        this.elements.urlsByGroupContainer.innerHTML = groupsToShow.map(group => {
+        this.elements.urlsByGroupContainer.innerHTML = this.groups.map(group => {
             const urls = group.urls || [];
             
             if (urls.length === 0) {
@@ -553,28 +484,6 @@ class PageController {
                 }
             }
         });
-    }
-
-    handleGroupFilter() {
-        console.log('[PageController] Group filter changed:', this.elements.groupSelect.value);
-        
-        // Update button text based on filter
-        const selectedGroupId = this.elements.groupSelect.value;
-        if (selectedGroupId) {
-            const group = this.groups.find(g => g.id === selectedGroupId);
-            const groupName = group ? group.name : 'Selected Group';
-            this.elements.selectAllUrlsBtn.textContent = `Select All URLs in ${groupName}`;
-            this.elements.deselectAllUrlsBtn.textContent = `Deselect All URLs in ${groupName}`;
-        } else {
-            this.elements.selectAllUrlsBtn.textContent = 'Select All URLs';
-            this.elements.deselectAllUrlsBtn.textContent = 'Deselect All URLs';
-        }
-        
-        // Re-render the URLs to show only the selected group
-        this.renderUrlsByGroup();
-        
-        // Update counts to reflect the filtered view
-        this.updateCounts();
     }
 
     updateCounts() {
@@ -1170,8 +1079,10 @@ class PageController {
         this.updateProcessingState();
         this.updateStatus('Processing complete');
         
-        // Note: Keep processing table visible to show final results
-        // Table will only be reset when starting new processing
+        // Hide processing table
+        if (this.elements.processingTable) {
+            this.elements.processingTable.style.display = 'none';
+        }
         
         // Extract all individual reviews from the results and show in Results section
         const allReviews = (results && results.tabs)
@@ -1273,167 +1184,6 @@ class PageController {
         this.reviewResultsTable = new ReviewResultsTable('reviewResultsContainer');
         
         console.log('[PageController] ReviewResultsTable component initialized successfully');
-    }
-
-    // Handle consolidated download request from background script
-    async handleConsolidatedDownload(consolidatedData) {
-        try {
-            console.log('[Dashboard] Handling consolidated download:', consolidatedData);
-            
-            if (!consolidatedData || !consolidatedData.allResults || consolidatedData.allResults.length === 0) {
-                console.warn('[Dashboard] No consolidated results to download');
-                return;
-            }
-
-            const totalReviews = consolidatedData.allResults.length;
-            const totalUrls = consolidatedData.urlCount || 1;
-            const restaurantNames = consolidatedData.restaurantNames || [];
-
-            console.log(`[Dashboard] Processing ${totalReviews} reviews from ${totalUrls} URLs for download`);
-
-            // Create timestamp for filename
-            const now = new Date();
-            const timestamp = now.toISOString().replace(/[:.]/g, '-').split('T')[0] + '_' + 
-                             now.toTimeString().slice(0, 8).replace(/:/g, '-');
-
-            // Prepare data for CSV
-            const csvData = consolidatedData.allResults.map(log => ({
-                'Restaurant': log.restaurantName || 'Unknown',
-                'URL': log.url || '',
-                'Review ID': log.reviewId || '',
-                'Customer Name': log.customerName || '',
-                'Extracted Name': log.extractedName || '',
-                'Rating': log.rating || '',
-                'Review Text': (log.reviewText || '').replace(/"/g, '""'), // Escape quotes for CSV
-                'Sentiment': log.sentiment || '',
-                'Complaint ID': log.complaintId || 'None',
-                'Complaint Name': this.getComplaintName(log.complaintId),
-                'Confidence': log.confidence || '',
-                'Generated Reply': (log.reply || '').replace(/"/g, '""'), // Escape quotes for CSV
-                'Reply Posted': log.replied ? 'Yes' : 'No',
-                'Category': log.selectedCategory || '',
-                'Include in Auto Reply': log.includeInAutoReply ? 'Yes' : 'No',
-                'Original Complaint': log.originalComplaintId || '',
-                'Corrected Complaint': log.correctedComplaintId || '',
-                'Correction Timestamp': log.correctionTimestamp || '',
-                'Processing Timestamp': now.toISOString()
-            }));
-
-            // Convert to CSV format
-            const csvHeaders = Object.keys(csvData[0]);
-            const csvRows = csvData.map(row => 
-                csvHeaders.map(header => `"${row[header] || ''}"`).join(',')
-            );
-            const csvContent = [
-                csvHeaders.join(','),
-                ...csvRows
-            ].join('\n');
-
-            // Create and download CSV file
-            const csvBlob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-            const csvUrl = URL.createObjectURL(csvBlob);
-            const csvLink = document.createElement('a');
-            csvLink.href = csvUrl;
-            csvLink.download = `AutoZomato-Consolidated-Results-${totalUrls}URLs-${timestamp}.csv`;
-            csvLink.style.display = 'none';
-            document.body.appendChild(csvLink);
-            csvLink.click();
-            document.body.removeChild(csvLink);
-            URL.revokeObjectURL(csvUrl);
-
-            // Also create a detailed JSON file
-            const jsonData = {
-                metadata: {
-                    totalUrls: totalUrls,
-                    totalReviews: totalReviews,
-                    successfulReplies: consolidatedData.allResults.filter(log => log.replied).length,
-                    timestamp: now.toISOString(),
-                    restaurants: restaurantNames
-                },
-                reviews: consolidatedData.allResults
-            };
-
-            const jsonBlob = new Blob([JSON.stringify(jsonData, null, 2)], { type: 'application/json' });
-            const jsonUrl = URL.createObjectURL(jsonBlob);
-            const jsonLink = document.createElement('a');
-            jsonLink.href = jsonUrl;
-            jsonLink.download = `AutoZomato-Consolidated-Detailed-${totalUrls}URLs-${timestamp}.json`;
-            jsonLink.style.display = 'none';
-            document.body.appendChild(jsonLink);
-            jsonLink.click();
-            document.body.removeChild(jsonLink);
-            URL.revokeObjectURL(jsonUrl);
-
-            console.log(`[Dashboard] ✅ Downloaded consolidated results files:`);
-            console.log(`- CSV: AutoZomato-Consolidated-Results-${totalUrls}URLs-${timestamp}.csv`);
-            console.log(`- JSON: AutoZomato-Consolidated-Detailed-${totalUrls}URLs-${timestamp}.json`);
-
-            // Show success notification
-            this.showDownloadNotification(totalReviews, totalUrls, restaurantNames);
-
-        } catch (error) {
-            console.error('[Dashboard] Error handling consolidated download:', error);
-            this.showError('Failed to download consolidated results: ' + error.message);
-        }
-    }
-
-    // Helper function to get complaint name from ID
-    getComplaintName(complaintId) {
-        if (!complaintId || complaintId === 'None') return 'None';
-        // This could be enhanced to use the actual complaint mappings if needed
-        return complaintId;
-    }
-
-    // Show download notification
-    showDownloadNotification(totalReviews, totalUrls, restaurantNames) {
-        const notification = document.createElement('div');
-        notification.className = 'download-notification';
-        
-        const restaurantList = restaurantNames && restaurantNames.length > 0 
-            ? restaurantNames.slice(0, 3).join(', ') + (restaurantNames.length > 3 ? '...' : '')
-            : 'Multiple Restaurants';
-        
-        notification.innerHTML = `
-            <div class="notification-content">
-                <div class="notification-icon">📦</div>
-                <div class="notification-text">
-                    <strong>AutoZomato Results Downloaded!</strong><br>
-                    <small>${totalReviews} reviews from ${totalUrls} URL${totalUrls > 1 ? 's' : ''}</small><br>
-                    <small style="opacity: 0.8;">${restaurantList}</small>
-                </div>
-                <button class="notification-close" onclick="this.parentElement.parentElement.remove()">×</button>
-            </div>
-        `;
-        
-        notification.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: #4299e1;
-            color: white;
-            padding: 16px;
-            border-radius: 8px;
-            font-size: 14px;
-            z-index: 10000;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-            max-width: 350px;
-            animation: slideIn 0.3s ease-out;
-        `;
-
-        // Add to page
-        document.body.appendChild(notification);
-
-        // Auto-remove after 6 seconds
-        setTimeout(() => {
-            if (notification.parentNode) {
-                notification.style.animation = 'slideOut 0.3s ease-in';
-                setTimeout(() => {
-                    if (notification.parentNode) {
-                        notification.parentNode.removeChild(notification);
-                    }
-                }, 300);
-            }
-        }, 6000);
     }
 
     // Callback for when complaints are manually corrected
@@ -2268,47 +2018,20 @@ class PageController {
     }
 
     selectAllUrls() {
-        // Get the selected group filter
-        const selectedGroupId = this.elements.groupSelect.value;
-        
-        if (selectedGroupId) {
-            // Only select URLs from the filtered group
-            const group = this.groups.find(g => g.id === selectedGroupId);
-            if (group && group.urls) {
+        this.selectedUrls.clear();
+        this.groups.forEach(group => {
+            if (group.urls) {
                 group.urls.forEach(url => {
                     this.selectedUrls.add(`${group.id}:${url}`);
                 });
             }
-        } else {
-            // Select all URLs from all groups (original behavior)
-            this.groups.forEach(group => {
-                if (group.urls) {
-                    group.urls.forEach(url => {
-                        this.selectedUrls.add(`${group.id}:${url}`);
-                    });
-                }
-            });
-        }
+        });
         this.saveData();
         this.render();
     }
 
     deselectAllUrls() {
-        // Get the selected group filter
-        const selectedGroupId = this.elements.groupSelect.value;
-        
-        if (selectedGroupId) {
-            // Only deselect URLs from the filtered group
-            const group = this.groups.find(g => g.id === selectedGroupId);
-            if (group && group.urls) {
-                group.urls.forEach(url => {
-                    this.selectedUrls.delete(`${group.id}:${url}`);
-                });
-            }
-        } else {
-            // Deselect all URLs (original behavior)
-            this.selectedUrls.clear();
-        }
+        this.selectedUrls.clear();
         this.saveData();
         this.render();
     }
@@ -2519,13 +2242,6 @@ class PageController {
 
     // Processing table methods (for Processing Control section)
     initializeProcessingTable() {
-        // Clear any existing processing table first
-        const existingTable = document.getElementById('processingTable');
-        if (existingTable) {
-            existingTable.remove();
-            console.log('[PageController] Removed existing processing table');
-        }
-        
         // RESTAURANT STATUS TABLE: Shows progress for each restaurant being processed
         // This table shows: Restaurant name, URL, Status, Progress bar, Total reviews found, Total replies generated
         const processingSectionHtml = `
@@ -2681,13 +2397,8 @@ class PageController {
             this.tabResults = [];
         }
         
-        // Find existing tab result by tabId first (most specific), then by URL as fallback
-        let existingIndex = this.tabResults.findIndex(result => result.tabId === tabId);
-        
-        // If no exact tabId match, look for URL match only if this is the first update for this tabId
-        if (existingIndex < 0) {
-            existingIndex = this.tabResults.findIndex(result => result.url === url && !result.tabId);
-        }
+        // Find existing tab result by tabId OR by URL (in case we're transitioning from placeholder)
+        let existingIndex = this.tabResults.findIndex(result => result.tabId === tabId || result.url === url);
         
         if (existingIndex >= 0) {
             // Update existing tab with live progress
