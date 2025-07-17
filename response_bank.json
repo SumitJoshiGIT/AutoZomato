@@ -107,7 +107,7 @@
             "storyName": "Incorrect Orders Received",
             "responses": [
                 "Hi {CustomerName}, we apologize for the inconvenience caused. Please reach out to us directly with your order details on +91 8095752222 or email us at hello@shariefbhai.com so we can make it right for you. Your satisfaction is our top priority.",
-                "Dear {CustomerName}, we apologize for the inconvenience caused by the incorrect order. Please contact us on +91 8095752222 or email hello@shariefbhai.com, and we will ensure this is rectified immediately. Your satisfaction is our top priority."
+                "Hello {CustomerName}, we apologize for the inconvenience caused by the incorrect order. Please contact us on +91 8095752222 or email hello@shariefbhai.com, and we will ensure this is rectified immediately. Your satisfaction is our top priority."
             ]
         },
         {
@@ -123,7 +123,7 @@
             "storyName": "Spill Packaging Issues",
             "responses": [
                 "Hi {CustomerName}, we regret the inconvenience caused by the spill packaging. We are working to improve our packaging to prevent such issues in the future. Thank you for bringing this to our attention.",
-                "Dear {CustomerName}, we are sorry to hear about the spilled packaging. We are taking steps to improve our packaging standards. Please contact us at +91 8095752222 or email hello@shariefbhai.com so we can make it right for you."
+                "Hello {CustomerName}, we are sorry to hear about the spilled packaging. We are taking steps to improve our packaging standards. Please contact us at +91 8095752222 or email hello@shariefbhai.com so we can make it right for you."
             ]
         },
         {
@@ -131,7 +131,7 @@
             "storyName": "Cooking Instructions Not Followed",
             "responses": [
                 "Hi {CustomerName}, we apologize for not following your cooking instructions. Your feedback is valuable, and we will ensure that our team pays closer attention to special requests moving forward.",
-                "Dear {CustomerName}, we apologize for not following your cooking instructions. We value your feedback and will ensure our team adheres to special requests in the future. Kindly reach out to us at +91 8095752222 or hello@shariefbhai.com for a resolution."
+                "Hello {CustomerName}, we apologize for not following your cooking instructions. We value your feedback and will ensure our team adheres to special requests in the future. Kindly reach out to us at +91 8095752222 or hello@shariefbhai.com for a resolution."
             ]
         },
         {
@@ -155,7 +155,7 @@
             "storyName": "Rude Staff",
             "responses": [
                 "Hi {CustomerName}, we regret to hear about your experience with our staff. This is not reflective of our service standards. Please contact us with your order details at +91 8095752222 or hello@shariefbhai.com so we can make it right for you. Your satisfaction is our top priority.",
-                "Dear {CustomerName}, we are sorry for the negative experience with our staff. Please reach out to us at +91 8095752222 or hello@shariefbhai.com so we can resolve this on priority."
+                "Hello {CustomerName}, we are sorry for the negative experience with our staff. Please reach out to us at +91 8095752222 or hello@shariefbhai.com so we can resolve this on priority."
             ]
         },
         {
