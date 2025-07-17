@@ -38,12 +38,15 @@ class AutoZomatoBackground {
                     console.log('[Background] Received startProcessing with:', {
                         urls: message.urls?.length || 0,
                         autoReply: message.autoReply,
-                        autoClose: message.autoClose
+                        autoClose: message.autoClose,
+                        dateRange: message.dateRange
                     });
                     this.startProcessing({
                         urls: message.urls || [],
                         autoReply: message.autoReply !== undefined ? message.autoReply : false,
-                        autoClose: message.autoClose !== undefined ? message.autoClose : false
+                        autoClose: message.autoClose !== undefined ? message.autoClose : false,
+                        gptMode: message.gptMode || {},
+                        dateRange: message.dateRange || {}
                     });
                     sendResponse({ success: true });
                     break;
@@ -115,6 +118,7 @@ class AutoZomatoBackground {
                     break;
                 case 'reviewProcessed':
                     // Forward real-time review data to dashboard
+                    console.log('[Background] Received reviewProcessed message from content script:', message.reviewData);
                     this.forwardReviewProcessedToTabs(message.reviewData);
                     break;
                 case 'log': // Listen for logs from popup
@@ -208,11 +212,15 @@ class AutoZomatoBackground {
             urls: data.urls || [],
             autoReply: data.autoReply || false,
             autoClose: data.autoClose || false,
-            gptMode: this.config.gptMode || { // Use the loaded gptMode from loadPromptContext
+            gptMode: data.gptMode || this.config.gptMode || { // Use passed gptMode or fallback to loaded
                 enabled: false,
                 apiKey: '',
                 keyName: 'AutoZomato GPT Key',
                 model: 'gpt-4o-mini'
+            },
+            dateRange: data.dateRange || {
+                startDate: '',
+                endDate: ''
             },
             // Max tabs is not configurable in the new UI, so we can hardcode or use a default
             maxTabs: 7, 
@@ -481,6 +489,9 @@ class AutoZomatoBackground {
         tabInfo.status = 'completed';
         tabInfo.restaurantName = restaurantName;
 
+        // Check if all tabs are completed and trigger download if needed
+        this.checkProcessingComplete();
+
         // If we are in sequential mode, resolve the promise to unblock the loop
         if (this.currentTabResolver) {
             this.currentTabResolver();
@@ -570,9 +581,147 @@ class AutoZomatoBackground {
             t => t.status === 'loading' || t.status === 'processing'
         );
         
+        const totalTabs = this.processingTabs.size;
+        const completedTabs = Array.from(this.processingTabs.values()).filter(t => t.status === 'completed').length;
+        
+        console.log(`[Background] Processing status check: ${completedTabs}/${totalTabs} tabs completed, ${activeTabs.length} active, isProcessing: ${this.isProcessing}`);
+        console.log(`[Background] Active tabs:`, activeTabs.map(t => ({ status: t.status, url: t.url })));
+        console.log(`[Background] Detailed review logs count:`, this.detailedReviewLogs.length);
+        
         if (activeTabs.length === 0 && this.isProcessing) {
+            console.log('[Background] All tabs completed, processing finished!');
             this.sendMessageToPopup('processingComplete', { results: this.allResults });
             this.isProcessing = false;
+            
+            // Trigger consolidated download if there are any results
+            if (this.detailedReviewLogs.length > 0) {
+                console.log('[Background] Triggering consolidated download...');
+                this.triggerConsolidatedDownload();
+            } else {
+                console.log('[Background] No results to download');
+                this.addLog('⚠️ No results found to download', 'warning');
+            }
+        } else {
+            console.log(`[Background] Still processing: ${activeTabs.length} active tabs remaining`);
+        }
+    }
+
+    // New method to trigger consolidated download
+    async triggerConsolidatedDownload() {
+        try {
+            console.log('[Background] triggerConsolidatedDownload() called');
+            console.log('[Background] Triggering consolidated download with', this.detailedReviewLogs.length, 'total reviews');
+            
+            // Get unique restaurant names
+            const restaurantNames = [...new Set(this.detailedReviewLogs.map(log => log.restaurantName).filter(Boolean))];
+            const urlCount = [...new Set(this.detailedReviewLogs.map(log => log.url).filter(Boolean))].length;
+            
+            console.log('[Background] Restaurant names:', restaurantNames);
+            console.log('[Background] URL count:', urlCount);
+            
+            const consolidatedData = {
+                allResults: this.detailedReviewLogs,
+                urlCount: urlCount,
+                restaurantNames: restaurantNames
+            };
+            
+            this.addLog(`🔄 Preparing to download ${this.detailedReviewLogs.length} reviews from ${urlCount} URLs...`);
+            
+            // Strategy 1: Try to send to dashboard page first
+            const dashboardTabs = await new Promise((resolve) => {
+                chrome.tabs.query({ url: chrome.runtime.getURL('src/page/page.html') }, resolve);
+            });
+            
+            console.log('[Background] Found dashboard tabs:', dashboardTabs.length);
+            
+            if (dashboardTabs.length > 0) {
+                // Use the dashboard page for download
+                const dashboardTab = dashboardTabs[0];
+                console.log('[Background] Using dashboard tab for download:', dashboardTab.id);
+                
+                try {
+                    await chrome.tabs.sendMessage(dashboardTab.id, {
+                        action: 'downloadResults',
+                        consolidatedData: consolidatedData
+                    });
+                    
+                    console.log('[Background] Download message sent to dashboard successfully');
+                    this.addLog(`✅ Downloaded consolidated results: ${this.detailedReviewLogs.length} reviews from ${urlCount} URLs`);
+                    return; // Success, exit function
+                } catch (dashboardError) {
+                    console.warn('[Background] Failed to send download message to dashboard:', dashboardError);
+                    // Continue to fallback strategies
+                }
+            }
+            
+            // Strategy 2: Try Zomato tabs as fallback
+            const zomatoTabs = await new Promise((resolve) => {
+                chrome.tabs.query({ url: '*://*.zomato.com/*' }, resolve);
+            });
+            
+            console.log('[Background] Found Zomato tabs:', zomatoTabs.length);
+            
+            if (zomatoTabs.length > 0) {
+                const zomatoTab = zomatoTabs[0];
+                console.log('[Background] Using Zomato tab for download:', zomatoTab.id, zomatoTab.url);
+                
+                try {
+                    await chrome.tabs.sendMessage(zomatoTab.id, {
+                        action: 'downloadResults',
+                        consolidatedData: consolidatedData
+                    });
+                    
+                    console.log('[Background] Download message sent to Zomato tab successfully');
+                    this.addLog(`✅ Downloaded consolidated results: ${this.detailedReviewLogs.length} reviews from ${urlCount} URLs`);
+                    return; // Success, exit function
+                } catch (zomatoError) {
+                    console.warn('[Background] Failed to send download message to Zomato tab:', zomatoError);
+                    // Continue to fallback strategy
+                }
+            }
+            
+            // Strategy 3: Create a new tab with the dashboard page for download
+            console.log('[Background] Creating new dashboard tab for download...');
+            try {
+                const newTab = await chrome.tabs.create({
+                    url: chrome.runtime.getURL('src/page/page.html'),
+                    active: false // Don't make it active to avoid interrupting user
+                });
+                
+                console.log('[Background] Created new dashboard tab:', newTab.id);
+                
+                // Wait a moment for the page to load
+                setTimeout(async () => {
+                    try {
+                        await chrome.tabs.sendMessage(newTab.id, {
+                            action: 'downloadResults',
+                            consolidatedData: consolidatedData
+                        });
+                        
+                        console.log('[Background] Download message sent to new dashboard tab successfully');
+                        this.addLog(`✅ Downloaded consolidated results: ${this.detailedReviewLogs.length} reviews from ${urlCount} URLs`);
+                        
+                        // Close the temporary tab after a short delay
+                        setTimeout(() => {
+                            chrome.tabs.remove(newTab.id).catch(() => {
+                                // Ignore errors if tab is already closed
+                            });
+                        }, 2000);
+                        
+                    } catch (newTabError) {
+                        console.error('[Background] Failed to send download message to new dashboard tab:', newTabError);
+                        this.addLog('❌ Failed to trigger automatic download - all strategies failed', 'error');
+                    }
+                }, 2000);
+                
+            } catch (createTabError) {
+                console.error('[Background] Failed to create new dashboard tab:', createTabError);
+                this.addLog('❌ Failed to trigger automatic download - could not create dashboard tab', 'error');
+            }
+            
+        } catch (error) {
+            console.error('[Background] Error triggering consolidated download:', error);
+            this.addLog('❌ Error triggering consolidated download: ' + error.message, 'error');
         }
     }
 
@@ -994,16 +1143,20 @@ class AutoZomatoBackground {
 
     forwardReviewProcessedToTabs(reviewData) {
         // Forward review processing data to all dashboard tabs
+        console.log('[Background] Forwarding reviewProcessed to dashboard tabs:', reviewData);
         chrome.tabs.query({}, (tabs) => {
-            tabs.forEach(tab => {
-                if (tab.url && tab.url.includes('page.html')) {
-                    chrome.tabs.sendMessage(tab.id, {
-                        action: 'reviewProcessed',
-                        reviewData: reviewData
-                    }).catch(() => {
-                        // Ignore errors for tabs that don't have the listener
-                    });
-                }
+            const dashboardTabs = tabs.filter(tab => tab.url && tab.url.includes('page.html'));
+            console.log('[Background] Found dashboard tabs:', dashboardTabs.length);
+            console.log('[Background] Dashboard tab URLs:', dashboardTabs.map(tab => tab.url));
+            
+            dashboardTabs.forEach(tab => {
+                console.log('[Background] Sending reviewProcessed to tab:', tab.id);
+                chrome.tabs.sendMessage(tab.id, {
+                    action: 'reviewProcessed',
+                    reviewData: reviewData
+                }).catch((error) => {
+                    console.log('[Background] Error sending message to tab:', tab.id, error);
+                });
             });
         });
     }

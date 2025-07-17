@@ -14,6 +14,9 @@ class PageController {
         this.restaurantNameMap = new Map();
         this.lastRunDate = null;
         
+        // Initialize the new ReviewResultsTable component
+        this.reviewResultsTable = null;
+        
         this.initializeElements();
         this.bindEvents();
         this.setupMessageListener();
@@ -29,6 +32,8 @@ class PageController {
             autoReplyToggle: document.getElementById('autoReplyToggle'),
             autoCloseToggle: document.getElementById('autoCloseToggle'),
             gptModeToggle: document.getElementById('gptModeToggle'),
+            startDate: document.getElementById('startDate'),
+            endDate: document.getElementById('endDate'),
             gptConfigPanel: document.getElementById('gptConfigPanel'),
             gptKeyName: document.getElementById('gptKeyName'),
             gptApiKey: document.getElementById('gptApiKey'),
@@ -62,8 +67,8 @@ class PageController {
             progressFill: document.getElementById('progressFill'),
             statusText: document.getElementById('statusText'),
             
-            // Results
-            resultsContainer: document.getElementById('resultsContainer'),
+            // Results - using new component container
+            reviewResultsContainer: document.getElementById('reviewResultsContainer'),
             
             // Modals
             addGroupModal: document.getElementById('addGroupModal'),
@@ -102,6 +107,10 @@ class PageController {
         this.elements.gptModel.addEventListener('change', () => this.saveGptSettings());
         this.elements.testGptConnection.addEventListener('click', () => this.testGptConnection());
         
+        // Date Range
+        this.elements.startDate.addEventListener('change', () => this.saveDateSettings());
+        this.elements.endDate.addEventListener('change', () => this.saveDateSettings());
+        
         // Group Management
         this.elements.addGroupBtn.addEventListener('click', () => this.showAddGroupModal());
         this.elements.selectAllGroups.addEventListener('click', () => this.selectAllGroups());
@@ -115,6 +124,9 @@ class PageController {
         this.elements.deselectAllUrlsBtn.addEventListener('click', () => this.deselectAllUrls());
         this.elements.saveUrlBtn.addEventListener('click', () => this.saveNewUrl());
         this.elements.cancelUrlBtn.addEventListener('click', () => this.hideAddUrlModal());
+        
+        // Group filter dropdown
+        this.elements.groupSelect.addEventListener('change', () => this.handleGroupFilter());
         
         // Processing
         this.elements.startProcessing.addEventListener('click', () => this.startProcessing());
@@ -154,7 +166,7 @@ class PageController {
 
     // Handle real-time review processing updates
     handleReviewProcessed(reviewData) {
-        console.log('[PageController] Review processed:', {
+        console.log('[PageController] *** REVIEW PROCESSED MESSAGE RECEIVED ***', {
             reviewId: reviewData.reviewId,
             customerName: reviewData.customerName,
             restaurantName: reviewData.restaurantName,
@@ -163,13 +175,67 @@ class PageController {
             hasReply: !!reviewData.reply
         });
         
-        // Add review to the real-time results panel (with duplicate prevention)
-        this.addReviewToResultsPanel(reviewData);
+        // Add review to the new ReviewResultsTable component
+        if (this.reviewResultsTable) {
+            this.reviewResultsTable.addReview(reviewData);
+            console.log('[PageController] Review added to ReviewResultsTable component');
+        } else {
+            console.error('[PageController] ReviewResultsTable component not initialized!');
+        }
         
-        // Update overall statistics
+        // Update overall statistics (keep this for other parts of the system)
         this.results.totalReviews++;
         if (reviewData.replied) {
             this.results.successfulReplies++;
+        }
+        
+        console.log('[PageController] *** REVIEW PROCESSING COMPLETE - Stats Updated ***', {
+            totalReviews: this.results.totalReviews,
+            successfulReplies: this.results.successfulReplies,
+            componentReviewCount: this.reviewResultsTable ? this.reviewResultsTable.getReviewCount() : 0
+        });
+    }
+
+    handleTabResultReady(tabResult) {
+        console.log('[PageController] *** TAB RESULT READY ***', {
+            tabId: tabResult.tabId,
+            url: tabResult.url,
+            restaurantName: tabResult.restaurantName,
+            reviewCount: tabResult.reviewCount,
+            repliesCount: tabResult.repliesCount,
+            detailedLogLength: tabResult.detailedReviewLog?.length || 0
+        });
+
+        // Process all detailed review logs from this tab
+        if (tabResult.detailedReviewLog && Array.isArray(tabResult.detailedReviewLog)) {
+            console.log('[PageController] Processing', tabResult.detailedReviewLog.length, 'reviews from tab completion');
+            
+            tabResult.detailedReviewLog.forEach((reviewData, index) => {
+                // Ensure the review has the restaurant name and URL
+                const enrichedReviewData = {
+                    ...reviewData,
+                    restaurantName: reviewData.restaurantName || tabResult.restaurantName,
+                    url: reviewData.url || tabResult.url,
+                    tabId: tabResult.tabId
+                };
+
+                console.log(`[PageController] Processing review ${index + 1}/${tabResult.detailedReviewLog.length}:`, {
+                    reviewId: enrichedReviewData.reviewId,
+                    customerName: enrichedReviewData.customerName,
+                    replied: enrichedReviewData.replied
+                });
+
+                // Add to the ReviewResultsTable component
+                if (this.reviewResultsTable) {
+                    this.reviewResultsTable.addReview(enrichedReviewData);
+                } else {
+                    console.error('[PageController] ReviewResultsTable component not initialized!');
+                }
+            });
+
+            console.log('[PageController] *** TAB RESULT PROCESSING COMPLETE ***');
+        } else {
+            console.warn('[PageController] No detailed review log found in tab result');
         }
     }
 
@@ -198,6 +264,7 @@ class PageController {
                     break;
                 case 'reviewProcessed':
                     // Handle real-time review processing updates
+                    console.log('[PageController] Received reviewProcessed message:', message.reviewData);
                     this.handleReviewProcessed(message.reviewData);
                     break;
                 case 'processingComplete':
@@ -209,6 +276,12 @@ class PageController {
                 case 'log':
                     this.addLogEntry(message.message, message.type, message.timestamp);
                     break;
+                case 'downloadResults':
+                    // Handle consolidated download request
+                    console.log('[Dashboard] Received download request:', message.consolidatedData);
+                    this.handleConsolidatedDownload(message.consolidatedData);
+                    sendResponse({ success: true });
+                    break;
                 default:
                     console.log('[Dashboard] Unhandled message action:', message.action);
             }
@@ -219,7 +292,7 @@ class PageController {
         try {
             const result = await chrome.storage.local.get([
                 'groups', 'selectedGroups', 'selectedUrls', 'restaurantNameMap', 'lastRunDate',
-                'autoReplyEnabled', 'autoCloseEnabled'
+                'autoReplyEnabled', 'autoCloseEnabled', 'startDate', 'endDate'
             ]);
             
             this.groups = result.groups || [];
@@ -239,6 +312,9 @@ class PageController {
             // Load settings
             this.elements.autoReplyToggle.checked = result.autoReplyEnabled !== false; // Default to true
             this.elements.autoCloseToggle.checked = result.autoCloseEnabled === true; // Default to false
+            
+            // Load date settings with defaults
+            this.loadDateSettings(result.startDate, result.endDate);
             
             // Load GPT settings
             await this.loadGptSettings();
@@ -364,9 +440,26 @@ class PageController {
             return;
         }
         
+        // Get the selected group filter
+        const selectedGroupId = this.elements.groupSelect.value;
+        
+        // Filter groups based on selection
+        const groupsToShow = selectedGroupId 
+            ? this.groups.filter(group => group.id === selectedGroupId)
+            : this.groups;
+        
+        if (groupsToShow.length === 0) {
+            this.elements.urlsByGroupContainer.innerHTML = `
+                <div class="empty-state">
+                    <p>No groups match the selected filter.</p>
+                </div>
+            `;
+            return;
+        }
+        
         let globalUrlIndex = 1;
         
-        this.elements.urlsByGroupContainer.innerHTML = this.groups.map(group => {
+        this.elements.urlsByGroupContainer.innerHTML = groupsToShow.map(group => {
             const urls = group.urls || [];
             
             if (urls.length === 0) {
@@ -460,6 +553,28 @@ class PageController {
                 }
             }
         });
+    }
+
+    handleGroupFilter() {
+        console.log('[PageController] Group filter changed:', this.elements.groupSelect.value);
+        
+        // Update button text based on filter
+        const selectedGroupId = this.elements.groupSelect.value;
+        if (selectedGroupId) {
+            const group = this.groups.find(g => g.id === selectedGroupId);
+            const groupName = group ? group.name : 'Selected Group';
+            this.elements.selectAllUrlsBtn.textContent = `Select All URLs in ${groupName}`;
+            this.elements.deselectAllUrlsBtn.textContent = `Deselect All URLs in ${groupName}`;
+        } else {
+            this.elements.selectAllUrlsBtn.textContent = 'Select All URLs';
+            this.elements.deselectAllUrlsBtn.textContent = 'Deselect All URLs';
+        }
+        
+        // Re-render the URLs to show only the selected group
+        this.renderUrlsByGroup();
+        
+        // Update counts to reflect the filtered view
+        this.updateCounts();
     }
 
     updateCounts() {
@@ -803,8 +918,8 @@ class PageController {
         // 1. PROCESSING STATUS TABLE: Shows restaurant-level progress (how many reviews found/processed per restaurant)
         this.initializeProcessingTable();
         
-        // 2. INDIVIDUAL REVIEW RESULTS TABLE: Shows detailed info for each individual review processed
-        this.initializeRealTimeResultsPanel();
+        // 2. INDIVIDUAL REVIEW RESULTS TABLE: Initialize the new component for individual reviews
+        this.initializeReviewResultsComponent();
         
         // Create initial placeholder entries for each URL to show in processing table
         selectedUrls.forEach((url, index) => {
@@ -837,6 +952,10 @@ class PageController {
                     apiKey: this.elements.gptApiKey.value,
                     keyName: this.elements.gptKeyName.value,
                     model: this.elements.gptModel.value
+                },
+                dateRange: {
+                    startDate: this.elements.startDate.value,
+                    endDate: this.elements.endDate.value
                 }
             };
             
@@ -852,7 +971,8 @@ class PageController {
                 urls: selectedUrls,
                 autoReply: settings.autoReply,
                 autoClose: settings.autoClose,
-                gptMode: settings.gptMode
+                gptMode: settings.gptMode,
+                dateRange: settings.dateRange
             });
             console.log('Message sent to background, response:', response);
             
@@ -1050,10 +1170,8 @@ class PageController {
         this.updateProcessingState();
         this.updateStatus('Processing complete');
         
-        // Hide processing table
-        if (this.elements.processingTable) {
-            this.elements.processingTable.style.display = 'none';
-        }
+        // Note: Keep processing table visible to show final results
+        // Table will only be reset when starting new processing
         
         // Extract all individual reviews from the results and show in Results section
         const allReviews = (results && results.tabs)
@@ -1142,9 +1260,209 @@ class PageController {
 
 
 
+    // Initialize the new ReviewResultsTable component
+    initializeReviewResultsComponent() {
+        console.log('[PageController] Initializing ReviewResultsTable component');
+        
+        if (!this.elements.reviewResultsContainer) {
+            console.error('[PageController] reviewResultsContainer not found!');
+            return;
+        }
+        
+        // Create new ReviewResultsTable instance
+        this.reviewResultsTable = new ReviewResultsTable('reviewResultsContainer');
+        
+        console.log('[PageController] ReviewResultsTable component initialized successfully');
+    }
+
+    // Handle consolidated download request from background script
+    async handleConsolidatedDownload(consolidatedData) {
+        try {
+            console.log('[Dashboard] Handling consolidated download:', consolidatedData);
+            
+            if (!consolidatedData || !consolidatedData.allResults || consolidatedData.allResults.length === 0) {
+                console.warn('[Dashboard] No consolidated results to download');
+                return;
+            }
+
+            const totalReviews = consolidatedData.allResults.length;
+            const totalUrls = consolidatedData.urlCount || 1;
+            const restaurantNames = consolidatedData.restaurantNames || [];
+
+            console.log(`[Dashboard] Processing ${totalReviews} reviews from ${totalUrls} URLs for download`);
+
+            // Create timestamp for filename
+            const now = new Date();
+            const timestamp = now.toISOString().replace(/[:.]/g, '-').split('T')[0] + '_' + 
+                             now.toTimeString().slice(0, 8).replace(/:/g, '-');
+
+            // Prepare data for CSV
+            const csvData = consolidatedData.allResults.map(log => ({
+                'Restaurant': log.restaurantName || 'Unknown',
+                'URL': log.url || '',
+                'Review ID': log.reviewId || '',
+                'Customer Name': log.customerName || '',
+                'Extracted Name': log.extractedName || '',
+                'Rating': log.rating || '',
+                'Review Text': (log.reviewText || '').replace(/"/g, '""'), // Escape quotes for CSV
+                'Sentiment': log.sentiment || '',
+                'Complaint ID': log.complaintId || 'None',
+                'Complaint Name': this.getComplaintName(log.complaintId),
+                'Confidence': log.confidence || '',
+                'Generated Reply': (log.reply || '').replace(/"/g, '""'), // Escape quotes for CSV
+                'Reply Posted': log.replied ? 'Yes' : 'No',
+                'Category': log.selectedCategory || '',
+                'Include in Auto Reply': log.includeInAutoReply ? 'Yes' : 'No',
+                'Original Complaint': log.originalComplaintId || '',
+                'Corrected Complaint': log.correctedComplaintId || '',
+                'Correction Timestamp': log.correctionTimestamp || '',
+                'Processing Timestamp': now.toISOString()
+            }));
+
+            // Convert to CSV format
+            const csvHeaders = Object.keys(csvData[0]);
+            const csvRows = csvData.map(row => 
+                csvHeaders.map(header => `"${row[header] || ''}"`).join(',')
+            );
+            const csvContent = [
+                csvHeaders.join(','),
+                ...csvRows
+            ].join('\n');
+
+            // Create and download CSV file
+            const csvBlob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const csvUrl = URL.createObjectURL(csvBlob);
+            const csvLink = document.createElement('a');
+            csvLink.href = csvUrl;
+            csvLink.download = `AutoZomato-Consolidated-Results-${totalUrls}URLs-${timestamp}.csv`;
+            csvLink.style.display = 'none';
+            document.body.appendChild(csvLink);
+            csvLink.click();
+            document.body.removeChild(csvLink);
+            URL.revokeObjectURL(csvUrl);
+
+            // Also create a detailed JSON file
+            const jsonData = {
+                metadata: {
+                    totalUrls: totalUrls,
+                    totalReviews: totalReviews,
+                    successfulReplies: consolidatedData.allResults.filter(log => log.replied).length,
+                    timestamp: now.toISOString(),
+                    restaurants: restaurantNames
+                },
+                reviews: consolidatedData.allResults
+            };
+
+            const jsonBlob = new Blob([JSON.stringify(jsonData, null, 2)], { type: 'application/json' });
+            const jsonUrl = URL.createObjectURL(jsonBlob);
+            const jsonLink = document.createElement('a');
+            jsonLink.href = jsonUrl;
+            jsonLink.download = `AutoZomato-Consolidated-Detailed-${totalUrls}URLs-${timestamp}.json`;
+            jsonLink.style.display = 'none';
+            document.body.appendChild(jsonLink);
+            jsonLink.click();
+            document.body.removeChild(jsonLink);
+            URL.revokeObjectURL(jsonUrl);
+
+            console.log(`[Dashboard] ✅ Downloaded consolidated results files:`);
+            console.log(`- CSV: AutoZomato-Consolidated-Results-${totalUrls}URLs-${timestamp}.csv`);
+            console.log(`- JSON: AutoZomato-Consolidated-Detailed-${totalUrls}URLs-${timestamp}.json`);
+
+            // Show success notification
+            this.showDownloadNotification(totalReviews, totalUrls, restaurantNames);
+
+        } catch (error) {
+            console.error('[Dashboard] Error handling consolidated download:', error);
+            this.showError('Failed to download consolidated results: ' + error.message);
+        }
+    }
+
+    // Helper function to get complaint name from ID
+    getComplaintName(complaintId) {
+        if (!complaintId || complaintId === 'None') return 'None';
+        // This could be enhanced to use the actual complaint mappings if needed
+        return complaintId;
+    }
+
+    // Show download notification
+    showDownloadNotification(totalReviews, totalUrls, restaurantNames) {
+        const notification = document.createElement('div');
+        notification.className = 'download-notification';
+        
+        const restaurantList = restaurantNames && restaurantNames.length > 0 
+            ? restaurantNames.slice(0, 3).join(', ') + (restaurantNames.length > 3 ? '...' : '')
+            : 'Multiple Restaurants';
+        
+        notification.innerHTML = `
+            <div class="notification-content">
+                <div class="notification-icon">📦</div>
+                <div class="notification-text">
+                    <strong>AutoZomato Results Downloaded!</strong><br>
+                    <small>${totalReviews} reviews from ${totalUrls} URL${totalUrls > 1 ? 's' : ''}</small><br>
+                    <small style="opacity: 0.8;">${restaurantList}</small>
+                </div>
+                <button class="notification-close" onclick="this.parentElement.parentElement.remove()">×</button>
+            </div>
+        `;
+        
+        notification.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #4299e1;
+            color: white;
+            padding: 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            z-index: 10000;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            max-width: 350px;
+            animation: slideIn 0.3s ease-out;
+        `;
+
+        // Add to page
+        document.body.appendChild(notification);
+
+        // Auto-remove after 6 seconds
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.style.animation = 'slideOut 0.3s ease-in';
+                setTimeout(() => {
+                    if (notification.parentNode) {
+                        notification.parentNode.removeChild(notification);
+                    }
+                }, 300);
+            }
+        }, 6000);
+    }
+
+    // Callback for when complaints are manually corrected
+    onComplaintCorrected(reviewId, reviewData) {
+        console.log('[PageController] Complaint correction received:', {
+            reviewId,
+            originalComplaint: reviewData.originalComplaintId || reviewData.complaintId,
+            correctedComplaint: reviewData.correctedComplaintId,
+            customerName: reviewData.customerName
+        });
+        
+        // You can add additional logic here, such as:
+        // - Sending the correction to a backend API
+        // - Updating analytics
+        // - Triggering re-processing of the response
+        // - Logging for audit trail
+    }
+
     // Real-time Results Panel Methods (instead of modal)
     initializeRealTimeResultsPanel() {
         console.log('[PageController] Initializing real-time INDIVIDUAL REVIEW results panel');
+        console.log('[PageController] resultsContainer element:', this.elements.resultsContainer);
+        console.log('[PageController] resultsContainer exists:', !!this.elements.resultsContainer);
+        
+        if (!this.elements.resultsContainer) {
+            console.error('[PageController] CRITICAL ERROR: resultsContainer element not found!');
+            console.log('[PageController] Available elements:', Object.keys(this.elements));
+            return;
+        }
         
         // Clear any existing results (reviewsMap already cleared in startProcessing)
         this.tabResults = [];
@@ -1154,6 +1472,9 @@ class PageController {
     }
 
     setupRealTimeResultsHTML() {
+        console.log('[PageController] Setting up real-time results HTML');
+        console.log('[PageController] About to set innerHTML for resultsContainer');
+        
         this.elements.resultsContainer.innerHTML = `
             <div class="real-time-results">
                 <div class="results-header">
@@ -1211,6 +1532,9 @@ class PageController {
             </div>
         `;
         
+        console.log('[PageController] Real-time results HTML has been set');
+        console.log('[PageController] resultsContainer innerHTML length:', this.elements.resultsContainer.innerHTML.length);
+        
         // Update element references
         this.elements.realTimeTotalReviews = document.getElementById('realTimeTotalReviews');
         this.elements.realTimeRepliesGenerated = document.getElementById('realTimeRepliesGenerated');
@@ -1221,8 +1545,33 @@ class PageController {
         this.elements.pauseProcessing = document.getElementById('pauseProcessing');
         this.elements.resumeProcessing = document.getElementById('resumeProcessing');
         
+        console.log('[AutoZomato] Real-time results elements after setup:', {
+            realTimeTotalReviews: !!this.elements.realTimeTotalReviews,
+            realTimeRepliesGenerated: !!this.elements.realTimeRepliesGenerated,
+            realTimeProgress: !!this.elements.realTimeProgress,
+            realTimeResultsTableBody: !!this.elements.realTimeResultsTableBody,
+            downloadRealTimeResults: !!this.elements.downloadRealTimeResults
+        });
         console.log('[AutoZomato] Real-time results table body element:', this.elements.realTimeResultsTableBody);
         console.log('[AutoZomato] Real-time results table body exists:', !!this.elements.realTimeResultsTableBody);
+        
+        // DEBUG: Add a test row to see if the table is working
+        if (this.elements.realTimeResultsTableBody) {
+            console.log('[PageController] DEBUG: Adding test row to verify table is working');
+            const testRow = document.createElement('tr');
+            testRow.innerHTML = `
+                <td>TEST Restaurant</td>
+                <td>TEST Customer</td>
+                <td>TEST Name</td>
+                <td>5★★★★★ (5)</td>
+                <td><span class="sentiment-positive">Positive</span></td>
+                <td class="reply-cell">TEST Reply</td>
+                <td class="status-cell"><span class="status-badge status-completed">TEST Status</span></td>
+                <td>${new Date().toLocaleTimeString()}</td>
+            `;
+            this.elements.realTimeResultsTableBody.appendChild(testRow);
+            console.log('[PageController] DEBUG: Test row added, table should now be visible');
+        }
         
         // Add event listeners for new buttons
         if (this.elements.downloadRealTimeResults) {
@@ -1668,6 +2017,55 @@ class PageController {
         }
     }
 
+    // Date Range Methods
+    loadDateSettings(startDate, endDate) {
+        // Set default dates if not provided
+        const today = new Date();
+        const oneYearAgo = new Date();
+        oneYearAgo.setFullYear(today.getFullYear() - 1);
+        
+        // Format dates for input fields (YYYY-MM-DD)
+        const defaultStartDate = oneYearAgo.toISOString().split('T')[0];
+        const defaultEndDate = today.toISOString().split('T')[0];
+        
+        // Set values with defaults
+        this.elements.startDate.value = startDate || defaultStartDate;
+        this.elements.endDate.value = endDate || defaultEndDate;
+        
+        console.log('Date settings loaded:', {
+            startDate: this.elements.startDate.value,
+            endDate: this.elements.endDate.value
+        });
+    }
+
+    async saveDateSettings() {
+        try {
+            const startDate = this.elements.startDate.value;
+            const endDate = this.elements.endDate.value;
+            
+            // Validate that start date is before end date
+            if (startDate && endDate && new Date(startDate) > new Date(endDate)) {
+                alert('Start date must be before end date');
+                // Reset to previous values
+                const result = await chrome.storage.local.get(['startDate', 'endDate']);
+                this.loadDateSettings(result.startDate, result.endDate);
+                return;
+            }
+            
+            await chrome.storage.local.set({
+                startDate: startDate,
+                endDate: endDate
+            });
+            
+            console.log('Date settings saved:', {
+                startDate: startDate,
+                endDate: endDate
+            });
+        } catch (error) {
+            console.error('Error saving date settings:', error);
+        }
+    }
+
     // GPT Mode Methods
     handleGptModeToggle() {
         const isEnabled = this.elements.gptModeToggle.checked;
@@ -1870,20 +2268,47 @@ class PageController {
     }
 
     selectAllUrls() {
-        this.selectedUrls.clear();
-        this.groups.forEach(group => {
-            if (group.urls) {
+        // Get the selected group filter
+        const selectedGroupId = this.elements.groupSelect.value;
+        
+        if (selectedGroupId) {
+            // Only select URLs from the filtered group
+            const group = this.groups.find(g => g.id === selectedGroupId);
+            if (group && group.urls) {
                 group.urls.forEach(url => {
                     this.selectedUrls.add(`${group.id}:${url}`);
                 });
             }
-        });
+        } else {
+            // Select all URLs from all groups (original behavior)
+            this.groups.forEach(group => {
+                if (group.urls) {
+                    group.urls.forEach(url => {
+                        this.selectedUrls.add(`${group.id}:${url}`);
+                    });
+                }
+            });
+        }
         this.saveData();
         this.render();
     }
 
     deselectAllUrls() {
-        this.selectedUrls.clear();
+        // Get the selected group filter
+        const selectedGroupId = this.elements.groupSelect.value;
+        
+        if (selectedGroupId) {
+            // Only deselect URLs from the filtered group
+            const group = this.groups.find(g => g.id === selectedGroupId);
+            if (group && group.urls) {
+                group.urls.forEach(url => {
+                    this.selectedUrls.delete(`${group.id}:${url}`);
+                });
+            }
+        } else {
+            // Deselect all URLs (original behavior)
+            this.selectedUrls.clear();
+        }
         this.saveData();
         this.render();
     }
@@ -2094,6 +2519,13 @@ class PageController {
 
     // Processing table methods (for Processing Control section)
     initializeProcessingTable() {
+        // Clear any existing processing table first
+        const existingTable = document.getElementById('processingTable');
+        if (existingTable) {
+            existingTable.remove();
+            console.log('[PageController] Removed existing processing table');
+        }
+        
         // RESTAURANT STATUS TABLE: Shows progress for each restaurant being processed
         // This table shows: Restaurant name, URL, Status, Progress bar, Total reviews found, Total replies generated
         const processingSectionHtml = `
@@ -2249,8 +2681,13 @@ class PageController {
             this.tabResults = [];
         }
         
-        // Find existing tab result by tabId OR by URL (in case we're transitioning from placeholder)
-        let existingIndex = this.tabResults.findIndex(result => result.tabId === tabId || result.url === url);
+        // Find existing tab result by tabId first (most specific), then by URL as fallback
+        let existingIndex = this.tabResults.findIndex(result => result.tabId === tabId);
+        
+        // If no exact tabId match, look for URL match only if this is the first update for this tabId
+        if (existingIndex < 0) {
+            existingIndex = this.tabResults.findIndex(result => result.url === url && !result.tabId);
+        }
         
         if (existingIndex >= 0) {
             // Update existing tab with live progress
@@ -2291,6 +2728,14 @@ let pageController;
 
 document.addEventListener('DOMContentLoaded', () => {
     console.log('[PageController] DOM Content Loaded - Initializing PageController');
+    console.log('[PageController] Current URL:', window.location.href);
+    console.log('[PageController] Document title:', document.title);
+    
+    // Test if resultsContainer exists before creating PageController
+    const resultsContainer = document.getElementById('resultsContainer');
+    console.log('[PageController] Initial resultsContainer check:', !!resultsContainer);
+    console.log('[PageController] resultsContainer element:', resultsContainer);
+    
     pageController = new PageController();
     
     // Make it globally accessible for onclick handlers immediately

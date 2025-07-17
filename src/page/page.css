@@ -1140,6 +1140,53 @@ body {
     box-shadow: 0 0 0 3px rgba(103, 33, 255, 0.2);
 }
 
+/* Date Range Styles */
+.date-range-item {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 10px;
+}
+
+.date-range-controls {
+    display: flex;
+    gap: 20px;
+    width: 100%;
+    flex-wrap: wrap;
+}
+
+.date-input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 150px;
+}
+
+.date-input-group label {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: #4a5568;
+}
+
+.date-input {
+    padding: 8px 12px;
+    border: 1px solid #cbd5e0;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    color: #2d3748;
+    background: white;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.date-input:focus {
+    outline: none;
+    border-color: #6721FF;
+    box-shadow: 0 0 0 3px rgba(103, 33, 255, 0.1);
+}
+
+.date-input:hover {
+    border-color: #a0aec0;
+}
+
 /* Results Section Styles */
 .results-section {
     background: white;
@@ -1660,4 +1707,75 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
     background: #5a1de6;
+}
+
+/* Download Notification Styles */
+.download-notification {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: #4299e1;
+    color: white;
+    padding: 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    z-index: 10000;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    max-width: 350px;
+    animation: slideIn 0.3s ease-out;
+}
+
+.notification-content {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.notification-icon {
+    font-size: 24px;
+    flex-shrink: 0;
+}
+
+.notification-text {
+    flex: 1;
+    line-height: 1.4;
+}
+
+.notification-close {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 18px;
+    cursor: pointer;
+    padding: 0;
+    margin-left: 8px;
+    flex-shrink: 0;
+    opacity: 0.8;
+    transition: opacity 0.2s;
+}
+
+.notification-close:hover {
+    opacity: 1;
+}
+
+@keyframes slideIn {
+    from { 
+        transform: translateX(100%); 
+        opacity: 0; 
+    }
+    to { 
+        transform: translateX(0); 
+        opacity: 1; 
+    }
+}
+
+@keyframes slideOut {
+    from { 
+        transform: translateX(0); 
+        opacity: 1; 
+    }
+    to { 
+        transform: translateX(100%); 
+        opacity: 0; 
+    }
 }

@@ -42,6 +42,53 @@ if (typeof currentRestaurantName === 'undefined') {
     var currentRestaurantName = '';
 }
 
+// Store complaint mappings from response bank
+if (typeof complaintMappings === 'undefined') {
+    var complaintMappings = new Map();
+}
+
+// Load complaint mappings from response bank
+async function loadComplaintMappings() {
+    if (complaintMappings.size > 0) {
+        return; // Already loaded
+    }
+    
+    try {
+        const response = await fetch(chrome.runtime.getURL('response_bank.json'));
+        const data = await response.json();
+        
+        // Load categories (star-based responses)
+        if (data.categories) {
+            data.categories.forEach(category => {
+                complaintMappings.set(category.id, {
+                    name: category.storyName,
+                    type: 'category',
+                    responses: category.responses
+                });
+            });
+        }
+        
+        // Load complaints (specific issues)
+        if (data.complaints) {
+            data.complaints.forEach(complaint => {
+                complaintMappings.set(complaint.id, {
+                    name: complaint.storyName,
+                    type: 'complaint',
+                    responses: complaint.responses
+                });
+            });
+        }
+        
+        console.log('[AutoZomato] Loaded complaint mappings:', complaintMappings.size, 'entries');
+    } catch (error) {
+        console.error('[AutoZomato] Failed to load complaint mappings:', error);
+        // Add fallback mappings
+        complaintMappings.set('1', { name: '5 Star Comments', type: 'category' });
+        complaintMappings.set('2', { name: '4 Star Comments', type: 'category' });
+        complaintMappings.set('3', { name: '3 Star Comments', type: 'category' });
+    }
+}
+
 // Debug function for testing popup functionality
 window.autoZomatoTestPopup = function() {
     console.log('[AutoZomato] Manual popup test called');
@@ -140,6 +187,12 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
         }
         
         sendResponse({ success: true });
+    } else if (message.action === 'downloadResults') {
+        console.log('[AutoZomato] Received download request with consolidated data:', message.consolidatedData);
+        
+        // Download consolidated results from all URLs
+        downloadConsolidatedResults(message.consolidatedData);
+        sendResponse({ success: true });
     }
 });
 
@@ -221,10 +274,21 @@ async function startProcessing(promptContext) {
         });
 
         // Click Unanswered tab and get counts
-        console.log('[AutoZomato] Clicking Unanswered tab and extracting counts...');
+        console.log('[AutoZomato] About to click Unanswered tab and extract counts...');
+        console.log('[AutoZomato] Current page URL:', window.location.href);
+        console.log('[AutoZomato] Page readyState:', document.readyState);
+        console.log('[AutoZomato] Page title:', document.title);
+        
+        // Check if we're on a reviews page
+        const isReviewsPage = window.location.href.includes('/reviews') || 
+                             document.querySelector('.res-review, [data-testid="review-card"]') || 
+                             document.querySelector('#li_unanswered');
+        console.log('[AutoZomato] Is reviews page:', isReviewsPage);
+        
         const counts = await clickUnansweredTabAndExtractCounts();
         const unansweredCount = counts.unansweredReviews;
-        console.log(`[AutoZomato] Unanswered reviews count: ${unansweredCount}`);
+        console.log(`[AutoZomato] Final unanswered reviews count: ${unansweredCount}`);
+        console.log(`[AutoZomato] Final total reviews count: ${counts.totalReviews}`);
 
         // Send initial progress to background script
         chrome.runtime.sendMessage({
@@ -330,6 +394,8 @@ async function startProcessing(promptContext) {
                 restaurantName: currentRestaurantName // Add restaurant name to completion data
             }
         });
+
+        // Note: File download will be handled by background script after all URLs are processed
     } catch (error) {
         console.error('[AutoZomato] Error during processing:', error);
         showAutoZomatoError(error);
@@ -338,6 +404,338 @@ async function startProcessing(promptContext) {
             error: error && error.stack ? error.stack : (error && error.message ? error.message : String(error))
         });
     }
+}
+
+// Function to automatically download results as a file
+async function downloadResultsFile(reviewsLog, restaurantName) {
+    try {
+        if (!reviewsLog || reviewsLog.length === 0) {
+            console.log('[AutoZomato] No reviews to download');
+            return;
+        }
+
+        // Create timestamp for filename
+        const now = new Date();
+        const timestamp = now.toISOString().replace(/[:.]/g, '-').split('T')[0] + '_' + 
+                         now.toTimeString().slice(0, 8).replace(/:/g, '-');
+        
+        // Clean restaurant name for filename
+        const cleanRestaurantName = (restaurantName || 'Unknown-Restaurant')
+            .replace(/[^a-zA-Z0-9\s-]/g, '')
+            .replace(/\s+/g, '-')
+            .substring(0, 50);
+
+        // Prepare data for CSV
+        const csvData = reviewsLog.map(log => ({
+            'Restaurant': restaurantName || 'Unknown',
+            'Review ID': log.reviewId || '',
+            'Customer Name': log.customerName || '',
+            'Extracted Name': log.extractedName || '',
+            'Rating': log.rating || '',
+            'Review Text': (log.reviewText || '').replace(/"/g, '""'), // Escape quotes for CSV
+            'Sentiment': log.sentiment || '',
+            'Complaint ID': log.complaintId || 'None',
+            'Complaint Name': getComplaintName(log.complaintId),
+            'Confidence': log.confidence || '',
+            'Generated Reply': (log.reply || '').replace(/"/g, '""'), // Escape quotes for CSV
+            'Reply Posted': log.replied ? 'Yes' : 'No',
+            'Category': log.selectedCategory || '',
+            'Include in Auto Reply': log.includeInAutoReply ? 'Yes' : 'No',
+            'Original Complaint': log.originalComplaintId || '',
+            'Corrected Complaint': log.correctedComplaintId || '',
+            'Correction Timestamp': log.correctionTimestamp || '',
+            'Processing Timestamp': now.toISOString(),
+            'URL': window.location.href
+        }));
+
+        // Convert to CSV format
+        const csvHeaders = Object.keys(csvData[0]);
+        const csvRows = csvData.map(row => 
+            csvHeaders.map(header => `"${row[header] || ''}"`).join(',')
+        );
+        const csvContent = [
+            csvHeaders.join(','),
+            ...csvRows
+        ].join('\n');
+
+        // Create and download CSV file
+        const csvBlob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const csvUrl = URL.createObjectURL(csvBlob);
+        const csvLink = document.createElement('a');
+        csvLink.href = csvUrl;
+        csvLink.download = `AutoZomato-Results-${cleanRestaurantName}-${timestamp}.csv`;
+        csvLink.style.display = 'none';
+        document.body.appendChild(csvLink);
+        csvLink.click();
+        document.body.removeChild(csvLink);
+        URL.revokeObjectURL(csvUrl);
+
+        // Also create a detailed JSON file
+        const jsonData = {
+            metadata: {
+                restaurant: restaurantName,
+                url: window.location.href,
+                timestamp: now.toISOString(),
+                totalReviews: reviewsLog.length,
+                successfulReplies: reviewsLog.filter(log => log.replied).length,
+                dateRange: window.autoZomatoConfig?.dateRange || null,
+                gptMode: window.autoZomatoConfig?.gptMode?.enabled || false
+            },
+            reviews: reviewsLog
+        };
+
+        const jsonBlob = new Blob([JSON.stringify(jsonData, null, 2)], { type: 'application/json' });
+        const jsonUrl = URL.createObjectURL(jsonBlob);
+        const jsonLink = document.createElement('a');
+        jsonLink.href = jsonUrl;
+        jsonLink.download = `AutoZomato-Detailed-${cleanRestaurantName}-${timestamp}.json`;
+        jsonLink.style.display = 'none';
+        document.body.appendChild(jsonLink);
+        jsonLink.click();
+        document.body.removeChild(jsonLink);
+        URL.revokeObjectURL(jsonUrl);
+
+        console.log(`[AutoZomato] ✅ Downloaded results files:`);
+        console.log(`- CSV: AutoZomato-Results-${cleanRestaurantName}-${timestamp}.csv`);
+        console.log(`- JSON: AutoZomato-Detailed-${cleanRestaurantName}-${timestamp}.json`);
+
+        // Show download notification
+        showDownloadNotification(reviewsLog.length, cleanRestaurantName);
+
+    } catch (error) {
+        console.error('[AutoZomato] Error downloading results file:', error);
+        showAutoZomatoError(new Error('Failed to download results file: ' + error.message));
+    }
+}
+
+// Function to handle consolidated results download from all URLs
+async function downloadConsolidatedResults(consolidatedData) {
+    try {
+        console.log('[AutoZomato] downloadConsolidatedResults() called with data:', consolidatedData);
+        
+        if (!consolidatedData || !consolidatedData.allResults || consolidatedData.allResults.length === 0) {
+            console.log('[AutoZomato] No consolidated results to download');
+            showAutoZomatoError(new Error('No consolidated results to download'));
+            return;
+        }
+
+        console.log('[AutoZomato] Processing', consolidatedData.allResults.length, 'reviews for download');
+
+        // Create timestamp for filename
+        const now = new Date();
+        const timestamp = now.toISOString().replace(/[:.]/g, '-').split('T')[0] + '_' + 
+                         now.toTimeString().slice(0, 8).replace(/:/g, '-');
+        
+        const totalUrls = consolidatedData.urlCount || 1;
+        const totalReviews = consolidatedData.allResults.length;
+
+        // Prepare data for CSV - flattened from all URLs
+        const csvData = consolidatedData.allResults.map(log => ({
+            'Restaurant': log.restaurantName || 'Unknown',
+            'URL': log.url || '',
+            'Review ID': log.reviewId || '',
+            'Customer Name': log.customerName || '',
+            'Extracted Name': log.extractedName || '',
+            'Rating': log.rating || '',
+            'Review Text': (log.reviewText || '').replace(/"/g, '""'), // Escape quotes for CSV
+            'Sentiment': log.sentiment || '',
+            'Complaint ID': log.complaintId || 'None',
+            'Complaint Name': getComplaintName(log.complaintId),
+            'Confidence': log.confidence || '',
+            'Generated Reply': (log.reply || '').replace(/"/g, '""'), // Escape quotes for CSV
+            'Reply Posted': log.replied ? 'Yes' : 'No',
+            'Category': log.selectedCategory || '',
+            'Include in Auto Reply': log.includeInAutoReply ? 'Yes' : 'No',
+            'Original Complaint': log.originalComplaintId || '',
+            'Corrected Complaint': log.correctedComplaintId || '',
+            'Correction Timestamp': log.correctionTimestamp || '',
+            'Processing Timestamp': now.toISOString()
+        }));
+
+        // Convert to CSV format
+        const csvHeaders = Object.keys(csvData[0]);
+        const csvRows = csvData.map(row => 
+            csvHeaders.map(header => `"${row[header] || ''}"`).join(',')
+        );
+        const csvContent = [
+            csvHeaders.join(','),
+            ...csvRows
+        ].join('\n');
+
+        // Create and download consolidated CSV file
+        const csvBlob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const csvUrl = URL.createObjectURL(csvBlob);
+        const csvLink = document.createElement('a');
+        csvLink.href = csvUrl;
+        csvLink.download = `AutoZomato-Consolidated-Results-${totalUrls}URLs-${timestamp}.csv`;
+        csvLink.style.display = 'none';
+        document.body.appendChild(csvLink);
+        csvLink.click();
+        document.body.removeChild(csvLink);
+        URL.revokeObjectURL(csvUrl);
+
+        // Also create a detailed consolidated JSON file
+        const jsonData = {
+            metadata: {
+                totalUrls: totalUrls,
+                totalReviews: totalReviews,
+                successfulReplies: consolidatedData.allResults.filter(log => log.replied).length,
+                timestamp: now.toISOString(),
+                dateRange: window.autoZomatoConfig?.dateRange || null,
+                gptMode: window.autoZomatoConfig?.gptMode?.enabled || false,
+                restaurants: consolidatedData.restaurantNames || []
+            },
+            reviews: consolidatedData.allResults
+        };
+
+        const jsonBlob = new Blob([JSON.stringify(jsonData, null, 2)], { type: 'application/json' });
+        const jsonUrl = URL.createObjectURL(jsonBlob);
+        const jsonLink = document.createElement('a');
+        jsonLink.href = jsonUrl;
+        jsonLink.download = `AutoZomato-Consolidated-Detailed-${totalUrls}URLs-${timestamp}.json`;
+        jsonLink.style.display = 'none';
+        document.body.appendChild(jsonLink);
+        jsonLink.click();
+        document.body.removeChild(jsonLink);
+        URL.revokeObjectURL(jsonUrl);
+
+        console.log(`[AutoZomato] ✅ Downloaded consolidated results files:`);
+        console.log(`- CSV: AutoZomato-Consolidated-Results-${totalUrls}URLs-${timestamp}.csv`);
+        console.log(`- JSON: AutoZomato-Consolidated-Detailed-${totalUrls}URLs-${timestamp}.json`);
+
+        // Show consolidated download notification
+        showConsolidatedDownloadNotification(totalReviews, totalUrls, consolidatedData.restaurantNames);
+
+    } catch (error) {
+        console.error('[AutoZomato] Error downloading consolidated results:', error);
+        showAutoZomatoError(new Error('Failed to download consolidated results: ' + error.message));
+    }
+}
+
+// Helper function to get complaint name from ID
+function getComplaintName(complaintId) {
+    if (!complaintId || complaintId === 'None') return 'None';
+    
+    const mapping = complaintMappings.get(complaintId);
+    return mapping ? mapping.name : complaintId;
+}
+
+// Show download notification
+function showDownloadNotification(reviewCount, restaurantName) {
+    const notification = document.createElement('div');
+    notification.id = 'autozomato-download-notification';
+    notification.innerHTML = `
+        📥 AutoZomato Results Downloaded!<br>
+        <small>${reviewCount} reviews from ${restaurantName}</small>
+    `;
+    notification.style.cssText = `
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        background: #48bb78;
+        color: white;
+        padding: 12px 16px;
+        border-radius: 8px;
+        font-size: 14px;
+        z-index: 10002;
+        font-family: Arial, sans-serif;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        max-width: 300px;
+        text-align: center;
+        border: 2px solid #38a169;
+        animation: slideIn 0.3s ease-out;
+    `;
+
+    // Add animation styles
+    const style = document.createElement('style');
+    style.textContent = `
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes slideOut {
+            from { transform: translateX(0); opacity: 1; }
+            to { transform: translateX(100%); opacity: 0; }
+        }
+    `;
+    document.head.appendChild(style);
+
+    document.body.appendChild(notification);
+
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+        notification.style.animation = 'slideOut 0.3s ease-in';
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.parentNode.removeChild(notification);
+            }
+            if (style.parentNode) {
+                style.parentNode.removeChild(style);
+            }
+        }, 300);
+    }, 5000);
+}
+
+// Show consolidated download notification
+function showConsolidatedDownloadNotification(totalReviews, totalUrls, restaurantNames) {
+    const notification = document.createElement('div');
+    notification.id = 'autozomato-consolidated-download-notification';
+    
+    const restaurantList = restaurantNames && restaurantNames.length > 0 
+        ? restaurantNames.slice(0, 3).join(', ') + (restaurantNames.length > 3 ? '...' : '')
+        : 'Multiple Restaurants';
+    
+    notification.innerHTML = `
+        📦 AutoZomato Consolidated Results Downloaded!<br>
+        <small>${totalReviews} reviews from ${totalUrls} URL${totalUrls > 1 ? 's' : ''}</small><br>
+        <small style="opacity: 0.8;">${restaurantList}</small>
+    `;
+    notification.style.cssText = `
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        background: #4299e1;
+        color: white;
+        padding: 12px 16px;
+        border-radius: 8px;
+        font-size: 14px;
+        z-index: 10002;
+        font-family: Arial, sans-serif;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        max-width: 320px;
+        text-align: center;
+        border: 2px solid #3182ce;
+        animation: slideIn 0.3s ease-out;
+    `;
+
+    // Add animation styles if not already present
+    if (!document.querySelector('#autozomato-animation-styles')) {
+        const style = document.createElement('style');
+        style.id = 'autozomato-animation-styles';
+        style.textContent = `
+            @keyframes slideIn {
+                from { transform: translateX(100%); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+            @keyframes slideOut {
+                from { transform: translateX(0); opacity: 1; }
+                to { transform: translateX(100%); opacity: 0; }
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    document.body.appendChild(notification);
+
+    // Auto-remove after 6 seconds (slightly longer for consolidated notification)
+    setTimeout(() => {
+        notification.style.animation = 'slideOut 0.3s ease-in';
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.parentNode.removeChild(notification);
+            }
+        }, 300);
+    }, 6000);
 }
 
 function showAutoZomatoError(error) {
@@ -365,24 +763,116 @@ function showAutoZomatoError(error) {
 }
 
 async function clickUnansweredTabAndExtractCounts() {
+    console.log('[AutoZomato] Starting clickUnansweredTabAndExtractCounts...');
+    
+    // First, check if we're on a reviews page
+    const currentUrl = window.location.href;
+    console.log('[AutoZomato] Current URL:', currentUrl);
+    
     // Click the 'Unanswered' tab if present
     const unansweredTab = document.getElementById('li_unanswered');
+    console.log('[AutoZomato] Looking for #li_unanswered tab...');
+    console.log('[AutoZomato] Unanswered tab element:', unansweredTab);
+    
     if (unansweredTab) {
-        unansweredTab.click();
-        console.log('[AutoZomato] Clicked Unanswered tab');
-        // Wait for content to update
-        await new Promise(function(resolve) { setTimeout(resolve, 1500); });
+        console.log('[AutoZomato] Found #li_unanswered tab, attempting to click...');
+        
+        // Check if the tab is visible and clickable
+        const isVisible = unansweredTab.offsetParent !== null;
+        const isClickable = !unansweredTab.disabled && unansweredTab.style.pointerEvents !== 'none';
+        
+        console.log('[AutoZomato] Tab state - visible:', isVisible, 'clickable:', isClickable);
+        console.log('[AutoZomato] Tab classes:', unansweredTab.className);
+        console.log('[AutoZomato] Tab text content:', unansweredTab.textContent?.trim());
+        
+        if (isVisible) {
+            unansweredTab.click();
+            console.log('[AutoZomato] ✅ Successfully clicked Unanswered tab');
+            
+            // Wait for content to update
+            console.log('[AutoZomato] Waiting 1.5s for content to update...');
+            await new Promise(function(resolve) { setTimeout(resolve, 1500); });
+            
+            // Verify the tab is now active
+            const isActive = unansweredTab.classList.contains('active') || 
+                           unansweredTab.classList.contains('selected') || 
+                           unansweredTab.getAttribute('aria-selected') === 'true';
+            console.log('[AutoZomato] Tab active after click:', isActive);
+        } else {
+            console.warn('[AutoZomato] ⚠️ Unanswered tab found but not visible/clickable');
+        }
     } else {
-        console.warn('[AutoZomato] Unanswered tab not found');
+        console.warn('[AutoZomato] ❌ Unanswered tab (#li_unanswered) not found');
+        
+        // Look for alternative selectors
+        const alternativeSelectors = [
+            '#li_unanswered',
+            '.unanswered-tab',
+            '[data-tab="unanswered"]',
+            'li[data-value="unanswered"]',
+            'a[href*="unanswered"]',
+            '.tab-unanswered'
+        ];
+        
+        console.log('[AutoZomato] Searching for alternative tab selectors...');
+        for (const selector of alternativeSelectors) {
+            const element = document.querySelector(selector);
+            if (element) {
+                console.log(`[AutoZomato] Found alternative tab with selector: ${selector}`, element);
+            }
+        }
+        
+        // List all tabs that exist
+        const allTabs = document.querySelectorAll('li[id*="li_"], .tab, [role="tab"]');
+        console.log('[AutoZomato] All tabs found on page:', Array.from(allTabs).map(tab => ({
+            id: tab.id,
+            className: tab.className,
+            textContent: tab.textContent?.trim(),
+            tagName: tab.tagName
+        })));
     }
+    
     // Extract counts from overview
+    console.log('[AutoZomato] Extracting review counts...');
     let totalReviews = null;
     let unansweredReviews = null;
+    
     const totalNode = document.querySelector('.all-reviews-count');
     const unansweredNode = document.querySelector('.unanswered-reviews-count');
-    if (totalNode) totalReviews = parseInt(totalNode.textContent.replace(/\D/g, ''));
-    if (unansweredNode) unansweredReviews = parseInt(unansweredNode.textContent.replace(/\D/g, ''));
-    console.log('[AutoZomato] Overview counts:', { totalReviews, unansweredReviews });
+    
+    console.log('[AutoZomato] Total reviews node:', totalNode);
+    console.log('[AutoZomato] Unanswered reviews node:', unansweredNode);
+    
+    if (totalNode) {
+        totalReviews = parseInt(totalNode.textContent.replace(/\D/g, ''));
+        console.log('[AutoZomato] Extracted total reviews:', totalReviews, 'from text:', totalNode.textContent);
+    } else {
+        console.warn('[AutoZomato] Total reviews count element not found');
+    }
+    
+    if (unansweredNode) {
+        unansweredReviews = parseInt(unansweredNode.textContent.replace(/\D/g, ''));
+        console.log('[AutoZomato] Extracted unanswered reviews:', unansweredReviews, 'from text:', unansweredNode.textContent);
+    } else {
+        console.warn('[AutoZomato] Unanswered reviews count element not found');
+        
+        // Look for alternative count selectors
+        const alternativeCountSelectors = [
+            '.unanswered-count',
+            '[data-count="unanswered"]',
+            '.review-count',
+            '.count-unanswered'
+        ];
+        
+        for (const selector of alternativeCountSelectors) {
+            const element = document.querySelector(selector);
+            if (element) {
+                console.log(`[AutoZomato] Found alternative count with selector: ${selector}`, element.textContent);
+            }
+        }
+    }
+    
+    console.log('[AutoZomato] Final overview counts:', { totalReviews, unansweredReviews });
     return { totalReviews, unansweredReviews };
 }
 
@@ -432,17 +922,64 @@ async function scrapeReviews() {
             const reviewTextElement = el.querySelector('.rev-text');
             const reviewText = reviewTextElement ? reviewTextElement.innerText.trim() : '';
 
+            // Extract review date
+            const reviewDateElement = el.querySelector('.rev-details time, .rev-details .time, [data-testid="review-date"], .time');
+            let reviewDate = null;
+            let reviewDateStr = '';
+            
+            if (reviewDateElement) {
+                // Try to get datetime attribute first, then innerText
+                reviewDateStr = reviewDateElement.getAttribute('datetime') || 
+                               reviewDateElement.getAttribute('title') || 
+                               reviewDateElement.innerText.trim();
+                
+                // Parse the date string - Zomato might use various formats
+                if (reviewDateStr) {
+                    try {
+                        // Try parsing as ISO date first
+                        reviewDate = new Date(reviewDateStr);
+                        
+                        // If that fails, try common formats
+                        if (isNaN(reviewDate.getTime())) {
+                            // Handle formats like "2 days ago", "1 week ago", etc.
+                            const now = new Date();
+                            if (reviewDateStr.includes('day') && reviewDateStr.includes('ago')) {
+                                const days = parseInt(reviewDateStr.match(/\d+/)?.[0] || '0');
+                                reviewDate = new Date(now.getTime() - (days * 24 * 60 * 60 * 1000));
+                            } else if (reviewDateStr.includes('week') && reviewDateStr.includes('ago')) {
+                                const weeks = parseInt(reviewDateStr.match(/\d+/)?.[0] || '0');
+                                reviewDate = new Date(now.getTime() - (weeks * 7 * 24 * 60 * 60 * 1000));
+                            } else if (reviewDateStr.includes('month') && reviewDateStr.includes('ago')) {
+                                const months = parseInt(reviewDateStr.match(/\d+/)?.[0] || '0');
+                                reviewDate = new Date(now.getFullYear(), now.getMonth() - months, now.getDate());
+                            } else if (reviewDateStr.includes('year') && reviewDateStr.includes('ago')) {
+                                const years = parseInt(reviewDateStr.match(/\d+/)?.[0] || '0');
+                                reviewDate = new Date(now.getFullYear() - years, now.getMonth(), now.getDate());
+                            } else {
+                                // Try direct Date parsing as fallback
+                                reviewDate = new Date(reviewDateStr);
+                            }
+                        }
+                    } catch (dateError) {
+                        console.warn(`[AutoZomato] Could not parse review date: "${reviewDateStr}"`, dateError);
+                        reviewDate = null;
+                    }
+                }
+            }
+
             // Find the reply textarea and submit button to confirm it's a review that can be replied to
             const replyTextarea = el.querySelector('textarea');
             const submitButton = el.querySelector('.zblack');
 
             if (reviewId && replyTextarea) { // Check for reviewId and a textarea to reply
-                console.log(`[AutoZomato Content] Scraped review with ID: ${reviewId}, customer: ${customerName}`);
+                console.log(`[AutoZomato Content] Scraped review with ID: ${reviewId}, customer: ${customerName}, date: ${reviewDate ? reviewDate.toISOString().split('T')[0] : 'unknown'}`);
                 reviews.push({
                     reviewId,
                     customerName,
                     rating,
                     reviewText,
+                    reviewDate,
+                    reviewDateStr,
                     element: el,
                     replyTextarea: replyTextarea,
                     submitButton: submitButton
@@ -470,10 +1007,52 @@ async function replyToReviews(reviews, promptContext, onReplySuccess) {
 
     // Filter out reviews that have already been processed
     const processedReviewIds = processedReviewsLog.map(log => log.reviewId);
-    const unprocessedReviews = reviews.filter(review => !processedReviewIds.includes(review.reviewId));
+    let filteredReviews = reviews.filter(review => !processedReviewIds.includes(review.reviewId));
+    
+    // Apply date range filtering if configured
+    if (config.dateRange && (config.dateRange.startDate || config.dateRange.endDate)) {
+        const startDate = config.dateRange.startDate ? new Date(config.dateRange.startDate) : null;
+        const endDate = config.dateRange.endDate ? new Date(config.dateRange.endDate) : null;
+        
+        // Set end date to end of day (23:59:59) for inclusive comparison
+        if (endDate) {
+            endDate.setHours(23, 59, 59, 999);
+        }
+        
+        const beforeFilterCount = filteredReviews.length;
+        filteredReviews = filteredReviews.filter(review => {
+            if (!review.reviewDate || isNaN(review.reviewDate.getTime())) {
+                // If we can't determine the date, include the review (safer approach)
+                console.warn(`[AutoZomato] Including review ${review.reviewId} - could not determine date`);
+                return true;
+            }
+            
+            const reviewDate = review.reviewDate;
+            let includeReview = true;
+            
+            if (startDate && reviewDate < startDate) {
+                includeReview = false;
+            }
+            
+            if (endDate && reviewDate > endDate) {
+                includeReview = false;
+            }
+            
+            if (!includeReview) {
+                console.log(`[AutoZomato] Filtering out review ${review.reviewId} - date ${reviewDate.toISOString().split('T')[0]} outside range ${startDate ? startDate.toISOString().split('T')[0] : 'any'} to ${endDate ? endDate.toISOString().split('T')[0] : 'any'}`);
+            }
+            
+            return includeReview;
+        });
+        
+        console.log(`[AutoZomato] Date filtering: ${beforeFilterCount} reviews -> ${filteredReviews.length} reviews (filtered out ${beforeFilterCount - filteredReviews.length} reviews outside date range)`);
+    }
+    
+    const unprocessedReviews = filteredReviews;
     
     if (unprocessedReviews.length !== reviews.length) {
-        console.log(`[AutoZomato] Skipping ${reviews.length - unprocessedReviews.length} already processed reviews out of ${reviews.length} total`);
+        const totalFiltered = reviews.length - unprocessedReviews.length;
+        console.log(`[AutoZomato] Filtered out ${totalFiltered} reviews (processed + date range) out of ${reviews.length} total`);
         console.log(`[AutoZomato] Processing ${unprocessedReviews.length} new reviews`);
     } else {
         console.log(`[AutoZomato] Processing ${unprocessedReviews.length} reviews (all new)`);
@@ -731,6 +1310,192 @@ function handleIncludeCheckboxChange(event) {
     }
 }
 
+// Create complaint selector dropdown
+function createComplaintSelector(currentComplaintId, reviewId) {
+    const select = document.createElement('select');
+    select.className = 'complaint-dropdown';
+    select.style.cssText = `
+        width: 100%;
+        padding: 4px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-size: 11px;
+        background-color: white;
+        cursor: pointer;
+    `;
+    
+    // Add default option
+    const defaultOption = document.createElement('option');
+    defaultOption.value = '';
+    defaultOption.textContent = 'Select complaint type...';
+    select.appendChild(defaultOption);
+    
+    // Add complaint options
+    complaintMappings.forEach((mapping, id) => {
+        const option = document.createElement('option');
+        option.value = id;
+        option.textContent = mapping.name;
+        if (id === currentComplaintId) {
+            option.selected = true;
+        }
+        select.appendChild(option);
+    });
+    
+    // Add event listener
+    select.addEventListener('change', (event) => handleComplaintChange(event, reviewId));
+    
+    return select;
+}
+
+// Handle complaint type change
+async function handleComplaintChange(event, reviewId) {
+    const newComplaintId = event.target.value;
+    const logEntry = processedReviewsLog.find(log => log.reviewId === reviewId);
+    
+    if (!logEntry) {
+        console.warn('[AutoZomato] No log entry found for review:', reviewId);
+        return;
+    }
+    
+    console.log(`[AutoZomato] Complaint changed for review ${reviewId}: ${logEntry.complaintId} -> ${newComplaintId}`);
+    
+    // Track the correction
+    if (logEntry.complaintId !== newComplaintId) {
+        if (!logEntry.originalComplaintId) {
+            logEntry.originalComplaintId = logEntry.complaintId;
+        }
+        logEntry.correctedComplaintId = newComplaintId;
+        logEntry.correctionTimestamp = new Date().toISOString();
+    }
+    
+    // Update complaint ID
+    logEntry.complaintId = newComplaintId;
+    
+    // Regenerate reply if complaint type is selected
+    if (newComplaintId && complaintMappings.has(newComplaintId)) {
+        try {
+            const newReply = await generateReplyFromComplaint(logEntry, newComplaintId);
+            if (newReply) {
+                logEntry.reply = newReply;
+                
+                // Update the popup display
+                const row = event.target.closest('tr');
+                const replyDiv = row.querySelector('.editable-reply');
+                if (replyDiv) {
+                    replyDiv.textContent = newReply;
+                    // Add visual feedback
+                    replyDiv.style.backgroundColor = '#fff3cd';
+                    setTimeout(() => {
+                        replyDiv.style.backgroundColor = '';
+                    }, 2000);
+                }
+                
+                // Update the textarea on the page
+                const reviewElement = document.querySelector(`.res-review[data-review_id="${reviewId}"]`);
+                if (reviewElement) {
+                    const textarea = reviewElement.querySelector('textarea');
+                    if (textarea) {
+                        textarea.value = newReply;
+                        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                        console.log(`[AutoZomato] Updated textarea for review ${reviewId} with new complaint-based reply`);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('[AutoZomato] Error regenerating reply:', error);
+        }
+    }
+    
+    // Update correction indicator
+    updateCorrectionIndicator(reviewId);
+}
+
+// Generate reply based on complaint type
+async function generateReplyFromComplaint(logEntry, complaintId) {
+    try {
+        // Load response bank if not already loaded
+        if (complaintMappings.size === 0) {
+            await loadComplaintMappings();
+        }
+        
+        const mapping = complaintMappings.get(complaintId);
+        if (!mapping || !mapping.responses) {
+            console.warn('[AutoZomato] No mapping found for complaint ID:', complaintId);
+            return null;
+        }
+        
+        let templates = [];
+        
+        // Handle different response structures
+        if (mapping.type === 'category') {
+            // Star-based categories have Written Review vs No Written Review
+            const hasWrittenReview = logEntry.review && logEntry.review.trim().length > 0;
+            const responseType = hasWrittenReview ? 'Written Review' : 'No Written Review';
+            templates = mapping.responses[responseType] || [];
+        } else if (mapping.type === 'complaint') {
+            // Complaint responses are direct arrays
+            templates = mapping.responses || [];
+        }
+        
+        if (templates.length === 0) {
+            console.warn('[AutoZomato] No templates found for complaint:', complaintId);
+            return null;
+        }
+        
+        // Select random template
+        const template = templates[Math.floor(Math.random() * templates.length)];
+        
+        // Replace placeholders
+        let reply = template
+            .replace(/{CustomerName}/g, logEntry.extractedName || logEntry.customerName || 'valued customer')
+            .replace(/{LocationName}/g, currentRestaurantName || 'our restaurant');
+        
+        console.log(`[AutoZomato] Generated reply from complaint ${complaintId}:`, reply);
+        return reply;
+        
+    } catch (error) {
+        console.error('[AutoZomato] Error generating reply from complaint:', error);
+        return null;
+    }
+}
+
+// Update correction indicator for a review
+function updateCorrectionIndicator(reviewId) {
+    const row = document.querySelector(`#autozomato-log-popup tr[data-review-id="${reviewId}"]`);
+    if (!row) return;
+    
+    const logEntry = processedReviewsLog.find(log => log.reviewId === reviewId);
+    if (!logEntry) return;
+    
+    let correctionCell = row.querySelector('.correction-indicator');
+    if (!correctionCell) {
+        // Create correction indicator cell if it doesn't exist
+        correctionCell = document.createElement('td');
+        correctionCell.className = 'correction-indicator';
+        correctionCell.style.cssText = `
+            padding: 4px;
+            border-bottom: 1px solid #eee;
+            text-align: center;
+            font-size: 10px;
+            vertical-align: top;
+        `;
+        row.appendChild(correctionCell);
+    }
+    
+    if (logEntry.correctedComplaintId) {
+        const originalName = complaintMappings.get(logEntry.originalComplaintId)?.name || logEntry.originalComplaintId;
+        const correctedName = complaintMappings.get(logEntry.correctedComplaintId)?.name || logEntry.correctedComplaintId;
+        correctionCell.innerHTML = `
+            <span style="color: #e53e3e; text-decoration: line-through;">${originalName}</span><br>
+            <span style="color: #48bb78;">→ ${correctedName}</span>
+        `;
+        correctionCell.title = `Corrected on ${new Date(logEntry.correctionTimestamp).toLocaleString()}`;
+    } else {
+        correctionCell.innerHTML = '';
+        correctionCell.title = '';
+    }
+}
+
 // GPT Mode Processing - Single-prompt analysis + Response bank reply generation
 async function processReviewWithGPTMode(review, config, onReplySuccess) {
     try {
@@ -849,7 +1614,7 @@ async function processReviewWithGPTMode(review, config, onReplySuccess) {
         
         // Update log popup if open
         if (document.getElementById('autozomato-log-popup')) {
-            renderLogPopupContent();
+            renderLogPopupContent().catch(console.error);
         }
         
     } catch (error) {
@@ -1116,7 +1881,7 @@ RESPOND WITH JSON ONLY - NO OTHER TEXT:
 
         // Update log popup if open
         if (document.getElementById('autozomato-log-popup')) {
-            renderLogPopupContent();
+            renderLogPopupContent().catch(console.error);
         }
         
     } catch (error) {
@@ -1143,7 +1908,47 @@ async function postReply(review, reply, config) {
 
 // GPT Single-Prompt Review Processing - ANALYSIS ONLY, NO REPLY GENERATION
 async function processReviewWithGPT(review, config) {
-    const gptPrompt = `You are an AI assistant for a restaurant review management system. Analyze this customer review and extract the following information in a single response.
+    // Load response bank to get complaint descriptions
+    let complaintDescriptions = '';
+    try {
+        const responseBankUrl = chrome.runtime.getURL('response_bank.json');
+        const response = await fetch(responseBankUrl);
+        const responseBank = await response.json();
+        
+        // Build complaint descriptions from response bank
+        if (responseBank.complaints && responseBank.complaints.length > 0) {
+            const complaintList = responseBank.complaints.map(complaint => 
+                `   - "${complaint.id}" = ${complaint.storyName}`
+            ).join('\n');
+            complaintDescriptions = complaintList;
+        } else {
+            // Fallback to hardcoded list if response bank fails
+            complaintDescriptions = `   - "1" = Incorrect Orders Received (wrong item delivered)
+   - "2" = Delivery Delays by Zomato (late delivery)
+   - "3" = Spill/Packaging Issues (food spilled, container broke)
+   - "4" = Cooking Instructions Not Followed (spice level, special requests ignored)
+   - "5" = Zomato Delivery-Related Issues (delivery person problems)
+   - "6" = Missing Cutlery (no spoon, fork, utensils)
+   - "7" = Rude Staff (restaurant staff behavior)
+   - "8" = Missing Item in Order (incomplete order)
+   - "9" = Food Safety – Foreign Materials (hair, plastic in food)`;
+        }
+    } catch (error) {
+        console.warn('[AutoZomato] Failed to load response bank for GPT prompt, using fallback:', error);
+        // Fallback to hardcoded list
+        complaintDescriptions = `   - "1" = Incorrect Orders Received (wrong item delivered)
+   - "2" = Delivery Delays by Zomato (late delivery)
+   - "3" = Spill/Packaging Issues (food spilled, container broke)
+   - "4" = Cooking Instructions Not Followed (spice level, special requests ignored)
+   - "5" = Zomato Delivery-Related Issues (delivery person problems)
+   - "6" = Missing Cutlery (no spoon, fork, utensils)
+   - "7" = Rude Staff (restaurant staff behavior)
+   - "8" = Missing Item in Order (incomplete order)
+   - "9" = Food Safety – Foreign Materials (hair, plastic in food)`;
+    }
+
+    const gptPrompt = `You are an AI assistant for a deliveries only restaurant review management system. Analyze this customer review and extract the following information in a single response.
+
 
 **RESTAURANT REVIEW ANALYSIS**
 
@@ -1166,17 +1971,11 @@ Rating: ${review.rating}/5 stars
 
 3. **DETECT SPECIFIC COMPLAINTS:**
    - Only assign a complaint ID if the review EXPLICITLY mentions one of these specific issues:
-   - "1" = Incorrect Orders Received (wrong item delivered)
-   - "2" = Delivery Delays by Zomato (late delivery)
-   - "3" = Spill/Packaging Issues (food spilled, container broke)
-   - "4" = Cooking Instructions Not Followed (spice level, special requests ignored)
-   - "5" = Zomato Delivery-Related Issues (delivery person problems)
-   - "6" = Missing Cutlery (no spoon, fork, utensils)
-   - "7" = Rude Staff (restaurant staff behavior)
-   - "8" = Missing Item in Order (incomplete order)
-   - "9" = Food Safety – Foreign Materials (hair, plastic in food)
+${complaintDescriptions}
    - Return null if no specific complaint is detected
-   - Be STRICT - general dissatisfaction like "food was bad" should NOT get a complaint ID
+   - Be MODERATE - general dissatisfaction like "food was bad" should NOT get a complaint ID
+   
+   
 
 **OUTPUT FORMAT:**
 Return ONLY a valid JSON object with these exact keys:
@@ -1192,6 +1991,9 @@ Customer: "john_foodie", Review: "Ordered chicken got mutton instead", Rating: 1
 
 Customer: "FoodLover123", Review: "Great taste and fast delivery!", Rating: 5  
 → {"firstName": null, "sentiment": "Positive", "complaintId": null}
+
+Customer: "Sarah123", Review: "Food was cold and missing spoon", Rating: 2
+→ {"firstName": "Sarah", "sentiment": "Negative", "complaintId": "6"}
 
 Now analyze the review above and return the JSON response:`;
 
@@ -1515,9 +2317,12 @@ function createOrUpdateIndicator(text, color = '#667eea') {
     indicator.style.backgroundColor = color;
 }
 
-function renderLogPopupContent() {
+async function renderLogPopupContent() {
     const popup = document.getElementById('autozomato-log-popup');
     if (!popup) return;
+    
+    // Load complaint mappings before rendering
+    await loadComplaintMappings();
 
     // Clear existing table content to prevent duplication
     let table = popup.querySelector('table');
@@ -1535,6 +2340,7 @@ function renderLogPopupContent() {
                 <th style="padding: 6px; text-align: left; border-bottom: 1px solid #eee; width: 120px;">Customer</th>
                 <th style="padding: 6px; text-align: center; border-bottom: 1px solid #eee; width: 70px;">Sentiment</th>
                 <th style="padding: 6px; text-align: center; border-bottom: 1px solid #eee; width: 60px;">Name Conf.</th>
+                <th style="padding: 6px; text-align: left; border-bottom: 1px solid #eee; width: 120px;">Complaint Type</th>
                 <th style="padding: 6px; text-align: left; border-bottom: 1px solid #eee;">Reply (Editable)</th>
                 <th style="padding: 6px; text-align: center; border-bottom: 1px solid #eee; width: 60px;">Status</th>
             </tr>
@@ -1549,7 +2355,7 @@ function renderLogPopupContent() {
             ? 'No reviews processed yet. Wait for AutoZomato to process reviews, or click the indicator to start processing.'
             : 'No reviews processed yet. Navigate to a restaurant review page to see processed reviews here.';
         
-        tbody.innerHTML = `<tr><td colspan="6" style="padding: 20px; text-align: center; color: #888; line-height: 1.4;">${emptyMessage}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7" style="padding: 20px; text-align: center; color: #888; line-height: 1.4;">${emptyMessage}</td></tr>`;
     } else {
         processedReviewsLog.forEach(log => {
             const row = document.createElement('tr');
@@ -1590,12 +2396,22 @@ function renderLogPopupContent() {
                 <td style="padding: 6px; border-bottom: 1px solid #eee; text-align: center; vertical-align: top;">
                     <span style="color: ${nameConfColor}; font-weight: bold; font-size: 10px;">${nameConfidence}%</span>
                 </td>
+                <td class="complaint-cell" style="padding: 6px; border-bottom: 1px solid #eee; vertical-align: top;">
+                    <!-- Complaint dropdown will be inserted here -->
+                </td>
                 <td style="padding: 6px; border-bottom: 1px solid #eee; white-space: pre-wrap; word-break: break-word; vertical-align: top;">
                     ${replyCellContent}
                 </td>
                 <td class="reply-status" style="padding: 6px; border-bottom: 1px solid #eee; text-align: center; font-size: 14px; vertical-align: top;">${log.replied ? '✅' : '❌'}</td>
             `;
             tbody.appendChild(row);
+            
+            // Add complaint dropdown after row is added to DOM
+            const complaintCell = row.querySelector('.complaint-cell');
+            if (complaintCell) {
+                const dropdown = createComplaintSelector(log.complaintId, log.reviewId);
+                complaintCell.appendChild(dropdown);
+            }
         });
     }
 
@@ -1766,7 +2582,7 @@ function showLogPopup() {
     document.body.appendChild(popup);
 
     // Initial render of the content
-    renderLogPopupContent();
+    renderLogPopupContent().catch(console.error);
 }
 
 function handleSelectAll() {
