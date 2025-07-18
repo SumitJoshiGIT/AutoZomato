@@ -1,15 +1,21 @@
 class AutoZomatoBackground {
     constructor() {
         this.isProcessing = false;
-        this.processingTabs = new Map();
+        this.processingTabs = new Map(); // Map of tabId -> processJob
         this.allResults = [];
         this.detailedReviewLogs = []; // Store detailed review logs for Excel export
         this.progress = { current: 0, total: 0 };
         this.results = { totalReviews: 0, successfulReplies: 0, errors: 0 };
         this.logs = []; // Store logs for state restoration
-        this.tabStatuses = []; // Store tab statuses for state restoration
+        this.jobStatuses = new Map(); // Map of jobId -> status object (NEW: job-based status tracking)
         this.expiryDate = new Date('2025-07-19T00:00:00Z'); // Hardcoded expiry date
         this.isExpired = new Date() > this.expiryDate;
+        
+        // Queue-based processing system
+        this.processQueue = []; // Array of process jobs
+        this.processJobCounter = 0; // Counter for unique job IDs
+        this.activeProcessJob = null; // Currently processing job
+        this.tabToJobMap = new Map(); // Map of tabId -> jobId
         this.config = {
             maxTabs: 7,
             urls: [],
@@ -39,13 +45,19 @@ class AutoZomatoBackground {
                         urls: message.urls?.length || 0,
                         autoReply: message.autoReply,
                         autoClose: message.autoClose,
+                        replyWaitTime: message.replyWaitTime,
+                        processingMode: message.processingMode,
                         dateRange: message.dateRange
                     });
                     this.startProcessing({
                         urls: message.urls || [],
                         autoReply: message.autoReply !== undefined ? message.autoReply : false,
                         autoClose: message.autoClose !== undefined ? message.autoClose : false,
+                        replyWaitTime: message.replyWaitTime || 3,
+                        processingMode: message.processingMode || 'ollama',
                         gptMode: message.gptMode || {},
+                        ollamaMode: message.ollamaMode || {},
+                        offlineMode: message.offlineMode || {},
                         dateRange: message.dateRange || {}
                     });
                     sendResponse({ success: true });
@@ -59,12 +71,16 @@ class AutoZomatoBackground {
                     sendResponse({ success: true });
                     break;
                 case 'getProcessingState':
+                    const jobStatusesArray = Array.from(this.jobStatuses.values());
+                    console.log(`[Background] getProcessingState - returning ${jobStatusesArray.length} job statuses:`, 
+                        jobStatusesArray.map(js => ({ jobId: js.jobId, url: js.url, status: js.status })));
+                    
                     sendResponse({
                         isProcessing: this.isProcessing,
                         progress: this.progress,
                         results: this.results,
                         logs: this.logs,
-                        tabStatuses: this.tabStatuses,
+                        jobStatuses: jobStatusesArray, // Convert Map to Array for UI
                         isExpired: this.isExpired
                     });
                     break;
@@ -111,10 +127,18 @@ class AutoZomatoBackground {
                     });
                     return true; // Keep message channel open for async response
                 case 'tabCompleted':
-                    this.handleTabCompleted(sender.tab.id, message.data);
+                    if (message.jobId) {
+                        this.handleJobCompleted(message.jobId, message.data);
+                    } else {
+                        console.warn('[Background] Received legacy tabCompleted message without jobId. Ignoring.');
+                    }
                     break;
                 case 'tabError':
-                    this.handleTabError(sender.tab.id, message.error);
+                    if (message.jobId) {
+                        this.handleJobError(message.jobId, message.error);
+                    } else {
+                        console.warn('[Background] Received legacy tabError message without jobId. Ignoring.');
+                    }
                     break;
                 case 'reviewProcessed':
                     // Forward real-time review data to dashboard
@@ -140,14 +164,24 @@ class AutoZomatoBackground {
                 case 'updateTabProgress':
                     this.handleTabProgressUpdate(sender.tab.id, message);
                     break;
+                case 'autoReplyCompleted':
+                    this.handleAutoReplyCompleted(sender.tab.id, message);
+                    break;
             }
         });
 
         // Handle tab removal
         chrome.tabs.onRemoved.addListener((tabId) => {
-            if (this.processingTabs.has(tabId)) {
+            const jobId = this.tabToJobMap.get(tabId);
+            if (jobId) {
+                console.log(`[Background] Tab ${tabId} removed, job ${jobId} may be affected`);
+                this.tabToJobMap.delete(tabId);
                 this.processingTabs.delete(tabId);
-                this.checkProcessingComplete();
+                
+                // If this was the active job and it's not completed, mark it as error
+                if (this.activeProcessJob?.id === jobId && this.activeProcessJob.status === 'processing') {
+                    this.handleJobError(jobId, 'Tab was closed unexpectedly');
+                }
             }
         });
     }
@@ -162,6 +196,10 @@ class AutoZomatoBackground {
     }
 
     broadcastState() {
+        const jobStatusesArray = Array.from(this.jobStatuses.values());
+        console.log(`[Background] broadcastState - sending ${jobStatusesArray.length} job statuses:`, 
+            jobStatusesArray.map(js => ({ jobId: js.jobId, url: js.url, status: js.status })));
+        
         chrome.runtime.sendMessage({
             action: 'updateState',
             data: {
@@ -169,7 +207,7 @@ class AutoZomatoBackground {
                 progress: this.progress,
                 results: this.results,
                 logs: this.logs,
-                tabStatuses: this.tabStatuses,
+                jobStatuses: jobStatusesArray, // Convert Map to Array for UI
                 isExpired: this.isExpired
             }
         });
@@ -212,11 +250,21 @@ class AutoZomatoBackground {
             urls: data.urls || [],
             autoReply: data.autoReply || false,
             autoClose: data.autoClose || false,
+            replyWaitTime: data.replyWaitTime || 3,
+            processingMode: data.processingMode || 'ollama',
             gptMode: data.gptMode || this.config.gptMode || { // Use passed gptMode or fallback to loaded
                 enabled: false,
                 apiKey: '',
                 keyName: 'AutoZomato GPT Key',
                 model: 'gpt-4o-mini'
+            },
+            ollamaMode: data.ollamaMode || {
+                enabled: false,
+                url: 'http://localhost:11434',
+                model: 'llama3:8b'
+            },
+            offlineMode: data.offlineMode || {
+                enabled: false
             },
             dateRange: data.dateRange || {
                 startDate: '',
@@ -229,27 +277,109 @@ class AutoZomatoBackground {
         };
         
         console.log('[Background] Final processing configuration:', {
-            ...this.config,
+            urls: this.config.urls.length,
+            processingMode: this.config.processingMode,
             gptMode: {
-                ...this.config.gptMode,
-                apiKey: this.config.gptMode.apiKey ? '***masked***' : ''
+                enabled: this.config.gptMode.enabled,
+                hasApiKey: !!this.config.gptMode.apiKey,
+                apiKey: this.config.gptMode.apiKey ? '***masked***' : '',
+                model: this.config.gptMode.model
+            },
+            ollamaMode: {
+                enabled: this.config.ollamaMode.enabled,
+                url: this.config.ollamaMode.url,
+                model: this.config.ollamaMode.model
+            },
+            offlineMode: {
+                enabled: this.config.offlineMode.enabled
             }
         });
         
+        // Clear all data from previous runs to prevent duplicates
         this.allResults = [];
-        this.detailedReviewLogs = []; // Reset detailed review logs
+        this.detailedReviewLogs = [];
+        this.jobStatuses.clear();
         this.processingTabs.clear();
+        
+        // Reset progress and results for the new run
         this.progress = { current: 0, total: this.config.urls.length };
         this.results = { totalReviews: 0, successfulReplies: 0, errors: 0 };
-        this.logs = []; // Reset logs for new processing
-        this.tabStatuses = []; // Reset tab statuses
+        this.logs = [];
         
-        const gptModeStatus = this.config.gptMode.enabled ? `GPT-${this.config.gptMode.model}` : 'Ollama';
-        this.addLog(`🚀 Processing started: ${this.config.urls.length} URLs, Auto-Reply: ${this.config.autoReply}, Auto-Close: ${this.config.autoClose}, AI Mode: ${gptModeStatus}`);
+        // Reset queue-based processing state for the new run
+        this.processQueue = [];
+        this.processJobCounter = 0;
+        this.activeProcessJob = null;
+        this.tabToJobMap.clear();
+        
+        // Create process jobs for each URL
+        this.config.urls.forEach((url, index) => {
+            const jobId = `job_${++this.processJobCounter}`;
+            
+            const processJob = {
+                id: jobId,
+                url: url,
+                index: index,
+                status: 'queued',
+                tabId: null,
+                restaurantName: null,
+                startTime: null,
+                endTime: null,
+                data: null,
+                error: null
+            };
+            
+            this.processQueue.push(processJob);
+            console.log(`[Background] Created job ${jobId} for URL: ${url}`);
+            
+            // Add to job statuses immediately so UI can show queued items
+            this.jobStatuses.set(jobId, {
+                jobId: jobId,
+                tabId: null,
+                url: url,
+                status: 'queued',
+                restaurantName: null,
+                progress: null,
+                startTime: null,
+                endTime: null,
+                data: {}
+            });
+        });
+        
+        // Debug: Check for duplicates after creation
+        console.log(`[Background] Created ${this.processQueue.length} jobs and ${this.jobStatuses.size} status entries`);
+        if (this.processQueue.length !== this.jobStatuses.size) {
+            console.error(`[Background] MISMATCH: ${this.processQueue.length} jobs vs ${this.jobStatuses.size} status entries`);
+        }
+        
+        // Log all job statuses for debugging
+        console.log(`[Background] Job statuses created:`, Array.from(this.jobStatuses.entries()).map(([id, status]) => ({
+            jobId: id,
+            url: status.url,
+            status: status.status
+        })));
+        
+        // Display the actual processing mode being used
+        let modeDisplay = 'Unknown';
+        switch (this.config.processingMode) {
+            case 'gpt':
+                modeDisplay = `GPT-${this.config.gptMode.model}`;
+                break;
+            case 'ollama':
+                modeDisplay = `Ollama-${this.config.ollamaMode.model}`;
+                break;
+            case 'offline':
+                modeDisplay = 'Offline';
+                break;
+            default:
+                modeDisplay = `${this.config.processingMode} (Unknown)`;
+        }
+        
+        this.addLog(`🚀 Processing started: ${this.config.urls.length} URLs, Auto-Reply: ${this.config.autoReply}, Auto-Close: ${this.config.autoClose}, AI Mode: ${modeDisplay}`);
         
         try {
-            // Switch to sequential processing
-            this.processUrlsSequentially();
+            // Start queue-based sequential processing
+            this.processNextInQueue();
         } catch (error) {
             console.error('Error during processing:', error);
             this.addLog(`Processing error: ${error.message}`, 'error');
@@ -258,37 +388,116 @@ class AutoZomatoBackground {
         }
     }
 
-    async processUrlsSequentially() {
-        const urls = this.config.urls;
-
-        for (let i = 0; i < urls.length; i++) {
-            if (!this.isProcessing) {
-                this.addLog('Processing stopped by user.', 'warning');
-                break;
-            }
-
-            const url = urls[i];
-            this.addLog(`Processing URL ${i + 1}/${urls.length}: ${url}`);
-
-            // This promise will resolve when the current tab is finished.
-            // We create a resolver function and store it, so it can be called from handleTabCompleted/handleTabError
-            await new Promise(async (resolve) => {
-                this.currentTabResolver = resolve;
-                await this.openTabForProcessing(url, i, this.config);
-            });
-
-            // Clean up resolver for the next iteration
-            this.currentTabResolver = null;
-
-            // Small delay between tabs if needed, especially if not auto-closing
-            if (this.isProcessing && i < urls.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, 1000)); // 1-second delay
-            }
+    async processNextInQueue() {
+        if (!this.isProcessing) {
+            this.addLog('Processing stopped by user.', 'warning');
+            return;
         }
-
-        // This part runs after the loop is finished or broken
-        if (this.isProcessing) {
+        
+        // Find next queued job
+        const nextJob = this.processQueue.find(job => job.status === 'queued');
+        if (!nextJob) {
+            // No more jobs in queue, processing complete
+            this.addLog(`All ${this.processQueue.length} URLs processed, completing...`);
             this.completeProcessing();
+            return;
+        }
+        
+        // Set as active job
+        this.activeProcessJob = nextJob;
+        nextJob.status = 'processing';
+        nextJob.startTime = Date.now();
+        
+        this.addLog(`Processing job ${nextJob.id} (${nextJob.index + 1}/${this.processQueue.length}): ${nextJob.url}`);
+        console.log(`[Background] Processing job ${nextJob.id}: ${nextJob.url}`);
+        
+        // Update job status
+        this.updateJobStatus(nextJob.id, 'processing');
+        
+        try {
+            await this.openTabForJob(nextJob);
+        } catch (error) {
+            console.error(`[Background] Error processing job ${nextJob.id}:`, error);
+            this.handleJobError(nextJob.id, error.message);
+        }
+    }
+
+    async openTabForJob(job) {
+        console.log(`[Background] Opening tab for job ${job.id}: ${job.url}`);
+        
+        try {
+            const tab = await chrome.tabs.create({ url: job.url, active: false });
+            console.log(`[Background] Tab ${tab.id} created for job ${job.id}`);
+            
+            // Link tab to job
+            job.tabId = tab.id;
+            this.tabToJobMap.set(tab.id, job.id);
+            this.processingTabs.set(tab.id, job);
+            
+            // Update job status
+            this.updateJobStatus(job.id, 'loading', { tabId: tab.id });
+            
+            this.addLog(`Opening tab for job ${job.id}: ${job.url}`);
+            this.sendMessageToPopup('updateJobStatus', {
+                jobId: job.id,
+                tabId: tab.id,
+                url: job.url,
+                status: 'loading'
+            });
+            
+            // Inject content script and start processing
+            setTimeout(async () => {
+                try {
+                    // Check if job still exists and is active
+                    if (this.activeProcessJob?.id !== job.id) {
+                        console.log(`[Background] Job ${job.id} is no longer active, skipping injection`);
+                        return;
+                    }
+                    
+                    console.log(`[Background] Injecting content script into tab ${tab.id} for job ${job.id}`);
+                    
+                    // First, inject the content script
+                    await chrome.scripting.executeScript({
+                        target: { tabId: tab.id },
+                        files: ['src/content/content.js'],
+                    });
+
+                    console.log(`[Background] Injecting config and triggering processing in tab ${tab.id} for job ${job.id}`);
+                    
+                    // Then, inject the config and job ID into the page, and trigger processing
+                    await chrome.scripting.executeScript({
+                        target: { tabId: tab.id },
+                        func: (config, jobId) => {
+                            window.autoZomatoConfig = config;
+                            window.autoZomatoJobId = jobId;
+                            console.log('[AutoZomato Background] Config and job ID injected:', { config, jobId });
+                            
+                            // Now, if startProcessing is available, call it.
+                            if (typeof window.startProcessing === 'function') {
+                                console.log('[AutoZomato Background] Triggering startProcessing from background injection.');
+                                window.startProcessing(config.promptContext);
+                            } else {
+                                console.error('[AutoZomato Background] window.startProcessing is not defined on the page.');
+                            }
+                        },
+                        args: [this.config, job.id] // Pass config and job ID
+                    });
+                    
+                    console.log(`[Background] Script injected and triggered successfully into tab ${tab.id} for job ${job.id}`);
+                    this.addLog(`Script injected successfully for job ${job.id}`);
+                    
+                    // Update status to processing
+                    this.updateJobStatus(job.id, 'processing', { tabId: tab.id });
+                    
+                } catch (error) {
+                    console.error(`[Background] Error injecting script into tab ${tab.id} for job ${job.id}:`, error);
+                    this.handleJobError(job.id, `Failed to inject script: ${error.message}`);
+                }
+            }, 3000); // Wait 3 seconds for page to load
+            
+        } catch (error) {
+            console.error(`[Background] Error opening tab for job ${job.id}:`, error);
+            this.handleJobError(job.id, `Failed to open tab: ${error.message}`);
         }
     }
 
@@ -315,278 +524,208 @@ class AutoZomatoBackground {
             }
         });
         this.isProcessing = false;
+        
+        // Broadcast final state to ensure UI shows completed job statuses
+        this.broadcastState();
     }
 
     async processUrlsBatch() {
-        // This function is no longer used, but we'll keep it for reference or future changes.
-        // The logic has been moved to processUrlsSequentially.
+        // This function is no longer used - replaced by queue-based processing
+        // Keeping for reference only
     }
 
     async openTabForProcessing(url, index, config) {
-        try {
-            const tab = await chrome.tabs.create({ url: url, active: false });
-            
-            this.processingTabs.set(tab.id, {
-                url: url,
-                index: index,
-                status: 'loading',
-                startTime: Date.now(),
-                config: config // Store config with the tab
-            });
-            
-            this.addLog(`Opening tab for: ${url}`);
-            this.updateTabStatusTracking(tab.id, url, 'processing');
-            this.sendMessageToPopup('updateTabStatus', {
-                tabId: tab.id,
-                url: url,
-                status: 'processing'
-            });
-            
-            // Inject content script and start processing
-            setTimeout(async () => {
-                try {
-                    // First, inject the config into the page
-                    await chrome.scripting.executeScript({
-                        target: { tabId: tab.id },
-                        func: (config) => {
-                            // This code runs in the content script context
-                            window.autoZomatoConfig = config;
-                            console.log('[AutoZomato Background] Config injected:', config);
-                        },
-                        args: [config] // Pass the entire config object
-                    });
-
-                    // Then inject the content script (which will auto-start processing)
-                    await chrome.scripting.executeScript({
-                        target: { tabId: tab.id },
-                        files: ['src/content/content.js'],
-                    });
-                    
-                    this.addLog(`Script injected successfully into tab ${tab.id}`);
-                } catch (error) {
-                    console.error(`Error injecting script into tab ${tab.id}:`, error);
-                    this.handleTabError(tab.id, `Failed to inject script: ${error.message}`);
-                }
-            }, 2000); // Wait for page to load
-            
-        } catch (error) {
-            console.error('Error opening tab:', error);
-            this.addLog(`Error opening tab for ${url}: ${error.message}`, 'error');
-            this.sendMessageToPopup('updateTabStatus', {
-                tabId: -1,
-                url: url,
-                status: 'error',
-                data: { error: 'Failed to open tab' }
-            });
-        }
+        // This function is no longer used - replaced by openTabForJob
+        // Keeping for reference only
     }
 
-    handleTabCompleted(tabId, data) {
-        const tabInfo = this.processingTabs.get(tabId);
-        if (!tabInfo) return;
+    handleJobCompleted(jobId, data) {
+        console.log(`[Background] handleJobCompleted called for job ${jobId}`);
         
-        // Prevent duplicate completion handling
-        if (tabInfo.status === 'completed') {
-            this.addLog(`Tab ${tabId} already completed, ignoring duplicate completion`, 'warning');
+        const job = this.processQueue.find(j => j.id === jobId);
+        if (!job) {
+            console.warn(`[Background] No job found with ID ${jobId}, ignoring completion message.`);
+            return;
+        }
+
+        if (job.status === 'completed' || job.status === 'error' || job.status === 'cancelled') {
+            console.warn(`[Background] Job ${jobId} already handled (status: ${job.status}), ignoring duplicate completion message.`);
             return;
         }
         
-        // Use restaurant name from data if available, otherwise from tabInfo
-        const restaurantName = data.restaurantName || tabInfo.restaurantName || this.extractRestaurantNameFromUrl(tabInfo.url);
-        
-        this.addLog(`${restaurantName} completed processing - ${data.reviewCount} reviews, ${data.repliesCount} replies`);
-        console.log(`[Background] Tab ${tabId} completion data:`, {
-            reviewCount: data.reviewCount,
-            repliesCount: data.repliesCount,
-            resultsLength: data.results?.length || 0,
-            detailedLogLength: data.detailedReviewLog?.length || 0
+        const tabId = job.tabId;
+        console.log(`[Background] Processing completion for job ${jobId}, tab ${tabId}`);
+        console.log(`[Background] Job ${jobId} details:`, {
+            id: job.id,
+            url: job.url,
+            tabId: job.tabId,
+            status: job.status,
+            restaurantName: job.restaurantName
         });
         
-        // Add results to global results with duplicate prevention
-        if (data.results && Array.isArray(data.results)) {
-            const existingReviewIds = new Set(this.allResults.map(r => r.reviewId));
-            const newResults = data.results.filter(result => !existingReviewIds.has(result.reviewId));
-            
-            if (newResults.length !== data.results.length) {
-                this.addLog(`Filtered out ${data.results.length - newResults.length} duplicate reviews from ${restaurantName}`);
+        // Determine completion status based on reviews processed vs expected
+        const reviewCount = data.reviewCount || 0;
+        const expectedReviews = data.expectedReviews || data.totalReviews || 0;
+        
+        console.log(`[Background] Job ${jobId} completion analysis:`, {
+            reviewCount,
+            expectedReviews,
+            hasExpectedCount: expectedReviews > 0
+        });
+        
+        // Determine final status
+        let finalStatus = 'completed';
+        if (expectedReviews > 0 && reviewCount !== expectedReviews) {
+            // Job completed but processed different number of reviews than expected
+            const completionRate = (reviewCount / expectedReviews) * 100;
+            if (reviewCount < expectedReviews) {
+                console.log(`[Background] Job ${jobId} partial completion: ${reviewCount}/${expectedReviews} reviews (${completionRate.toFixed(1)}%) - FEWER than expected`);
+            } else {
+                console.log(`[Background] Job ${jobId} partial completion: ${reviewCount}/${expectedReviews} reviews (${completionRate.toFixed(1)}%) - MORE than expected`);
             }
-            
-            this.allResults.push(...newResults);
-            this.addLog(`Added ${newResults.length} new results from ${restaurantName} (${data.results.length} total processed)`);
+            finalStatus = 'partial';
         }
         
-        // Store detailed review logs if available with duplicate prevention
+        job.status = finalStatus;
+        job.endTime = Date.now();
+        job.data = data;
+        
+        const restaurantName = data.restaurantName || job.restaurantName || this.extractRestaurantNameFromUrl(job.url);
+        job.restaurantName = restaurantName;
+        
+        // Update log message based on completion type
+        if (finalStatus === 'partial') {
+            const completionRate = expectedReviews > 0 ? ((reviewCount / expectedReviews) * 100).toFixed(1) : 0;
+            this.addLog(`${restaurantName} (Job ${jobId}) partially completed - ${reviewCount}/${expectedReviews} reviews (${completionRate}%), ${data.repliesCount} replies`, 'warning');
+        } else {
+            this.addLog(`${restaurantName} (Job ${jobId}) completed processing - ${reviewCount} reviews, ${data.repliesCount} replies`);
+        }
+        
+        if (data.results && Array.isArray(data.results)) {
+            // Add all results without filtering for duplicates (allow same URL to be processed multiple times)
+            const enrichedResults = data.results.map(result => ({ ...result, url: job.url, jobId: jobId }));
+            this.allResults.push(...enrichedResults);
+            this.addLog(`Added ${enrichedResults.length} results from ${restaurantName} (Job ${jobId})`);
+        }
+        
         if (data.detailedReviewLog && Array.isArray(data.detailedReviewLog)) {
-            const existingLogReviewIds = new Set(this.detailedReviewLogs.map(log => log.reviewId));
-            
-            // Add URL and timestamp to each log entry and filter duplicates
-            const enrichedLogs = data.detailedReviewLog
-                .filter(log => !existingLogReviewIds.has(log.reviewId))
-                .map(log => ({
-                    ...log,
-                    url: tabInfo.url,
-                    timestamp: new Date().toISOString(),
-                    restaurantName: restaurantName
-                }));
-            
-            if (enrichedLogs.length !== data.detailedReviewLog.length) {
-                this.addLog(`Filtered out ${data.detailedReviewLog.length - enrichedLogs.length} duplicate detailed logs from ${restaurantName}`);
-            }
+            // Add all detailed logs without filtering for duplicates
+            const enrichedLogs = data.detailedReviewLog.map(log => ({ 
+                ...log, 
+                url: job.url, 
+                jobId: jobId, 
+                timestamp: new Date().toISOString(), 
+                restaurantName: restaurantName 
+            }));
             
             this.detailedReviewLogs.push(...enrichedLogs);
-            this.addLog(`Added ${enrichedLogs.length} detailed review logs from ${restaurantName}`);
+            this.addLog(`Added ${enrichedLogs.length} detailed review logs from ${restaurantName} (Job ${jobId})`);
         }
         
-        // Update results totals
         this.results.totalReviews += data.reviewCount || 0;
         this.results.successfulReplies += data.repliesCount || 0;
         
-        // Send individual tab result to dashboard immediately
-        const tabResult = {
+        this.updateJobStatus(jobId, finalStatus, {
             tabId: tabId,
-            url: tabInfo.url,
-            restaurantName: restaurantName,
-            reviewCount: data.reviewCount || 0,
-            repliesCount: data.repliesCount || 0,
-            results: data.results || [],
-            detailedReviewLog: data.detailedReviewLog || [],
-            timestamp: new Date().toISOString(),
-            status: 'completed'
-        };
-        
-        this.sendMessageToPopup({
-            action: 'tabResultReady',
-            tabResult: tabResult
-        });
-        
-        // Update tab status tracking
-        this.updateTabStatusTracking(tabId, tabInfo.url, 'completed', {
             reviewCount: data.reviewCount,
             repliesCount: data.repliesCount,
-            restaurantName: restaurantName
-        });
-        
-        // Update popup with completion status
-        this.sendMessageToPopup('updateTabStatus', {
-            tabId: tabId,
-            url: tabInfo.url,
-            status: 'completed',
             restaurantName: restaurantName,
-            data: {
-                reviewCount: data.reviewCount,
-                repliesCount: data.repliesCount
-            }
+            endTime: Date.now(),
+            expectedReviews: expectedReviews,
+            completionRate: expectedReviews > 0 ? ((reviewCount / expectedReviews) * 100).toFixed(1) : 100
         });
         
-        // Update overall progress
+        console.log(`[Background] Job ${jobId} marked as ${finalStatus} in jobStatuses Map`);
+        console.log(`[Background] Current jobStatuses after completion:`, Array.from(this.jobStatuses.entries()).map(([id, status]) => ({
+            jobId: id,
+            url: status.url,
+            status: status.status,
+            restaurantName: status.restaurantName
+        })));
+        
         this.progress.current++;
-        this.sendMessageToPopup('updateProgress', {
-            current: this.progress.current,
-            total: this.config.urls.length
-        });
+        this.sendMessageToPopup('updateProgress', { current: this.progress.current, total: this.processQueue.length });
         
-        // Mark tab as completed
-        tabInfo.status = 'completed';
-        tabInfo.restaurantName = restaurantName;
-
-        // If we are in sequential mode, resolve the promise to unblock the loop
-        if (this.currentTabResolver) {
-            this.currentTabResolver();
-        }
-
-        // Close the tab if auto-close is enabled
-        if (tabInfo.config.autoClose) {
-            this.addLog(`Auto-closing completed tab ${tabId}`);
+        if (this.config.autoClose && tabId) {
+            this.addLog(`Auto-closing completed tab ${tabId} for job ${jobId}`);
             setTimeout(() => {
-                chrome.tabs.remove(tabId);
-            }, 1000); // Delay to allow user to see status
-        } else {
-            this.addLog(`Tab ${tabId} left open for inspection.`);
+                chrome.tabs.remove(tabId).catch(e => console.log(`Error removing tab: ${e.message}`));
+                this.tabToJobMap.delete(tabId);
+                this.processingTabs.delete(tabId);
+            }, 1000);
         }
+        
+        this.activeProcessJob = null;
+        setTimeout(() => this.processNextInQueue(), 1000);
     }
 
-    handleTabError(tabId, error) {
-        const tabInfo = this.processingTabs.get(tabId);
-        if (!tabInfo) return;
+    handleJobError(jobId, error) {
+        console.log(`[Background] Handling job error for ${jobId}: ${error}`);
         
-        this.addLog(`Tab ${tabId} error: ${error}`, 'error');
-        this.results.errors += 1;
+        const job = this.processQueue.find(j => j.id === jobId);
+        if (!job) {
+            console.warn(`[Background] No job found with ID ${jobId}, ignoring error message.`);
+            return;
+        }
         
-        // Update tab status tracking
-        this.updateTabStatusTracking(tabId, tabInfo.url, 'error', { error: error });
-
-        // Update popup with error status
-        this.sendMessageToPopup('updateTabStatus', {
-            tabId: tabId,
-            url: tabInfo.url,
-            status: 'error',
-            data: { error: error }
+        if (job.status === 'completed' || job.status === 'error' || job.status === 'cancelled') {
+            console.warn(`[Background] Job ${jobId} already handled (status: ${job.status}), ignoring duplicate error message.`);
+            return;
+        }
+        
+        job.status = 'error';
+        job.endTime = Date.now();
+        job.error = error;
+        
+        this.addLog(`Job ${jobId} error: ${error}`, 'error');
+        this.results.errors++;
+        
+        this.updateJobStatus(jobId, 'error', { 
+            tabId: job.tabId,
+            error: error,
+            endTime: Date.now()
         });
 
-        // Mark tab as errored
-        tabInfo.status = 'error';
-
-        // If we are in sequential mode, resolve the promise to unblock the loop
-        if (this.currentTabResolver) {
-            this.currentTabResolver();
-        }
-
-        // Close the tab if auto-close is enabled
-        if (tabInfo.config.autoClose) {
-            this.addLog(`Auto-closing error tab ${tabId}`, 'warning');
+        if (this.config.autoClose && job.tabId) {
+            this.addLog(`Auto-closing error tab ${job.tabId} for job ${jobId}`, 'warning');
             setTimeout(() => {
-                chrome.tabs.remove(tabId);
+                chrome.tabs.remove(job.tabId).catch(e => console.log(`Error removing tab: ${e.message}`));
+                this.tabToJobMap.delete(job.tabId);
+                this.processingTabs.delete(job.tabId);
             }, 1000);
-        } else {
-            this.addLog(`Tab ${tabId} left open for inspection after error.`);
         }
+        
+        this.activeProcessJob = null;
+        setTimeout(() => this.processNextInQueue(), 1000);
     }
 
     async waitForTabCompletion() {
-        // Wait for at least one tab to complete
-        return new Promise((resolve) => {
-            const checkInterval = setInterval(() => {
-                const activeTabs = Array.from(this.processingTabs.values()).filter(
-                    t => t.status === 'loading' || t.status === 'processing'
-                );
-                
-                if (activeTabs.length < this.config.maxTabs) {
-                    clearInterval(checkInterval);
-                    resolve();
-                }
-            }, 1000);
-        });
+        // This function is no longer used - replaced by queue-based processing
+        // Keeping for reference only
     }
 
     async waitForAllTabsComplete() {
-        return new Promise((resolve) => {
-            const checkInterval = setInterval(() => {
-                const activeTabs = Array.from(this.processingTabs.values()).filter(
-                    t => t.status === 'loading' || t.status === 'processing'
-                );
-                
-                if (activeTabs.length === 0) {
-                    clearInterval(checkInterval);
-                    resolve();
-                }
-            }, 1000);
-        });
+        // This function is no longer used - replaced by queue-based processing
+        // Keeping for reference only
     }
 
     checkProcessingComplete() {
-        const activeTabs = Array.from(this.processingTabs.values()).filter(
-            t => t.status === 'loading' || t.status === 'processing'
-        );
-        
-        if (activeTabs.length === 0 && this.isProcessing) {
-            this.sendMessageToPopup('processingComplete', { results: this.allResults });
-            this.isProcessing = false;
-        }
+        // This function is no longer used - replaced by queue-based processing
+        // Keeping for reference only
     }
 
     stopProcessing() {
         this.addLog('Stopping processing...');
         this.isProcessing = false;
+        
+        // Mark all queued jobs as cancelled
+        this.processQueue.forEach(job => {
+            if (job.status === 'queued' || job.status === 'processing') {
+                job.status = 'cancelled';
+                job.endTime = Date.now();
+                this.updateJobStatus(job.id, 'cancelled', { endTime: Date.now() });
+            }
+        });
         
         // Close all processing tabs
         for (const tabId of this.processingTabs.keys()) {
@@ -596,7 +735,10 @@ class AutoZomatoBackground {
                 // Ignore errors for tabs that might already be closed
             }
         }
+        
         this.processingTabs.clear();
+        this.tabToJobMap.clear();
+        this.activeProcessJob = null;
     }
 
     sendMessageToPopup(action, data) {
@@ -638,68 +780,191 @@ class AutoZomatoBackground {
         }
     }
 
-    updateTabStatusTracking(tabId, url, status, data = {}) {
-        const existingStatusIndex = this.tabStatuses.findIndex(t => t.tabId === tabId);
-        const statusEntry = { tabId, url, status, data };
-
-        if (existingStatusIndex > -1) {
-            this.tabStatuses[existingStatusIndex] = statusEntry;
-        } else {
-            this.tabStatuses.push(statusEntry);
+    updateJobStatus(jobId, status, additionalData = {}) {
+        console.log(`[Background] Updating job status for ${jobId}: ${status}`, additionalData);
+        
+        const job = this.processQueue.find(j => j.id === jobId);
+        if (!job) {
+            console.log(`[Background] No job found with ID ${jobId} for status update`);
+            return;
         }
+        
+        // Get existing status or create new one
+        const existingStatus = this.jobStatuses.get(jobId) || {
+            jobId: jobId,
+            tabId: null,
+            url: job.url,
+            status: 'queued',
+            restaurantName: null,
+            progress: null,
+            startTime: null,
+            endTime: null,
+            data: {}
+        };
+        
+        // Update the status
+        const updatedStatus = {
+            ...existingStatus,
+            status: status,
+            tabId: additionalData.tabId || existingStatus.tabId,
+            restaurantName: additionalData.restaurantName || existingStatus.restaurantName,
+            progress: additionalData.progress || existingStatus.progress,
+            startTime: additionalData.startTime || existingStatus.startTime,
+            endTime: additionalData.endTime || existingStatus.endTime,
+            data: {
+                ...existingStatus.data,
+                ...additionalData
+            }
+        };
+        
+        // Store in Map
+        this.jobStatuses.set(jobId, updatedStatus);
+        
+        console.log(`[Background] Updated job ${jobId} status: ${existingStatus.status} -> ${status}`);
+        console.log(`[Background] Current jobStatuses count: ${this.jobStatuses.size}`);
+        
+        // Send update to UI with explicit job ID emphasis
+        const messageData = {
+            ...updatedStatus,
+            jobId: jobId, // Ensure jobId is not overwritten by spreading updatedStatus
+            status: status // Ensure status is not overwritten by spreading updatedStatus
+        };
+        
+        console.log(`[Background] Sending job status update to UI:`, {
+            jobId: messageData.jobId,
+            status: messageData.status,
+            url: messageData.url,
+            tabId: messageData.tabId
+        });
+        
+        this.sendMessageToPopup('updateJobStatus', messageData);
+    }
+
+    // Utility function to get job status as array for UI
+    getJobStatusArray() {
+        return Array.from(this.jobStatuses.values());
+    }
+
+    // Utility function to validate job status integrity
+    validateJobStatuses() {
+        const queueJobIds = this.processQueue.map(j => j.id);
+        const statusJobIds = Array.from(this.jobStatuses.keys());
+        
+        console.log(`[Background] Validating job statuses...`);
+        console.log(`[Background] Queue jobs: ${queueJobIds.length}, Status entries: ${statusJobIds.length}`);
+        
+        // Check for missing status entries
+        const missingStatusIds = queueJobIds.filter(id => !this.jobStatuses.has(id));
+        if (missingStatusIds.length > 0) {
+            console.warn(`[Background] Missing status entries for jobs:`, missingStatusIds);
+        }
+        
+        // Check for orphaned status entries
+        const orphanedStatusIds = statusJobIds.filter(id => !queueJobIds.includes(id));
+        if (orphanedStatusIds.length > 0) {
+            console.warn(`[Background] Orphaned status entries for jobs:`, orphanedStatusIds);
+        }
+        
+        if (missingStatusIds.length === 0 && orphanedStatusIds.length === 0) {
+            console.log(`[Background] Job status integrity check passed`);
+        }
+        
+        return {
+            isValid: missingStatusIds.length === 0 && orphanedStatusIds.length === 0,
+            missingStatusIds,
+            orphanedStatusIds
+        };
     }
 
     handleRestaurantNameUpdate(tabId, restaurantName, url) {
-        const tabInfo = this.processingTabs.get(tabId);
-        if (!tabInfo) return;
+        // Find the job for this tab
+        const jobId = this.tabToJobMap.get(tabId);
+        if (!jobId) {
+            console.log(`[Background] No job found for tab ${tabId} restaurant name update`);
+            return;
+        }
         
-        // Store restaurant name for this tab
-        tabInfo.restaurantName = restaurantName;
+        const job = this.processQueue.find(j => j.id === jobId);
+        if (!job) {
+            console.log(`[Background] No job found with ID ${jobId} for restaurant name update`);
+            return;
+        }
         
-        // Update tab status tracking with restaurant name
-        this.updateTabStatusTracking(tabId, url, 'processing', { 
+        // Store restaurant name for this job
+        job.restaurantName = restaurantName;
+        
+        // Update job status with restaurant name
+        this.updateJobStatus(jobId, job.status, { 
+            tabId: tabId,
             restaurantName: restaurantName 
         });
         
-        // Send restaurant name update to dashboard
-        this.sendMessageToPopup('updateRestaurantName', {
-            tabId: tabId,
-            url: url,
-            restaurantName: restaurantName
-        });
-        
-        this.addLog(`Restaurant name updated for tab ${tabId}: ${restaurantName}`);
+        this.addLog(`Restaurant name updated for job ${jobId}: ${restaurantName}`);
     }
 
     handleTabProgressUpdate(tabId, data) {
         console.log('[Background] Received tab progress update:', tabId, data);
-        const tabInfo = this.processingTabs.get(tabId);
-        if (!tabInfo) {
-            console.warn('[Background] Tab info not found for:', tabId);
+        
+        // Find the job for this tab
+        const jobId = this.tabToJobMap.get(tabId);
+        if (!jobId) {
+            console.warn(`[Background] No job found for tab ${tabId} progress update`);
             return;
         }
         
-        // Update tab info with progress data
-        tabInfo.progress = data.progress;
-        tabInfo.restaurantName = data.restaurantName;
+        const job = this.processQueue.find(j => j.id === jobId);
+        if (!job) {
+            console.warn(`[Background] No job found with ID ${jobId} for progress update`);
+            return;
+        }
         
-        // Update tab status tracking
-        this.updateTabStatusTracking(tabId, data.url, data.status, {
+        // Update job with progress data
+        job.progress = data.progress;
+        job.restaurantName = data.restaurantName;
+        
+        // Update job status
+        this.updateJobStatus(jobId, data.status, {
+            tabId: tabId,
             restaurantName: data.restaurantName,
             progress: data.progress
         });
         
-        // Send progress update to dashboard
-        console.log('[Background] Forwarding progress update to dashboard:', data);
-        this.sendMessageToPopup('updateTabProgress', {
+        console.log(`Job ${jobId} progress: ${data.progress.current}/${data.progress.total} - ${data.restaurantName}`);
+    }
+
+    handleAutoReplyCompleted(tabId, message) {
+        console.log('[Background] Received autoReplyCompleted message:', tabId, message);
+        
+        // Find the job for this tab
+        const jobId = this.tabToJobMap.get(tabId);
+        if (!jobId) {
+            console.warn(`[Background] No job found for tab ${tabId} auto-reply completion`);
+            return;
+        }
+        
+        const job = this.processQueue.find(j => j.id === jobId);
+        if (!job) {
+            console.warn(`[Background] No job found with ID ${jobId} for auto-reply completion`);
+            return;
+        }
+        
+        // Log auto-reply completion
+        this.addLog(`🚀 Auto-reply completed for ${message.data.restaurantName}: ${message.data.publishedCount}/${message.data.totalToPublish} replies published (${message.data.successRate}% success rate)`);
+        
+        // Update job status to include auto-reply completion info
+        this.updateJobStatus(jobId, 'completed', {
             tabId: tabId,
-            url: data.url,
-            restaurantName: data.restaurantName,
-            progress: data.progress,
-            status: data.status
+            restaurantName: message.data.restaurantName,
+            progress: { current: message.data.publishedCount, total: message.data.totalToPublish },
+            autoReplyCompleted: true,
+            autoReplyStats: {
+                publishedCount: message.data.publishedCount,
+                totalToPublish: message.data.totalToPublish,
+                successRate: message.data.successRate
+            }
         });
         
-        console.log(`Tab ${tabId} progress: ${data.progress.current}/${data.progress.total} - ${data.restaurantName}`);
+        console.log(`[Background] Job ${jobId} auto-reply completed: ${message.data.publishedCount}/${message.data.totalToPublish} replies published`);
     }
 
     extractRestaurantNameFromUrl(url) {

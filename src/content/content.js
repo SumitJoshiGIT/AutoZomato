@@ -1,6 +1,11 @@
 // --- AutoZomato Content Script Injection Check ---
 console.log('[AutoZomato] Content script injected and running!');
 
+// Use a set to track job IDs for which completion has been sent
+if (typeof window.autoZomatoSentJobs === 'undefined') {
+    window.autoZomatoSentJobs = new Set();
+}
+
 window.addEventListener('error', function(e) {
     try {
         // Only log errors from this script, not the page
@@ -27,25 +32,215 @@ window.addEventListener('unhandledrejection', function(e) {
 // AutoZomato Content Script for Review Processing
 console.log('AutoZomato content script loaded');
 
-// Global store for processed review data
+// UNIFIED REVIEW STATE MANAGER - Single source of truth for all review processing
+if (typeof window.AutoZomatoReviewManager === 'undefined') {
+    window.AutoZomatoReviewManager = {
+        // Core data structure - single array with all review states
+        reviews: new Map(), // reviewId -> reviewData
+        
+        // Processing state
+        processingState: {
+            currentSessionUrl: '',
+            currentRestaurantName: '',
+            totalReviews: 0,
+            processedCount: 0,
+            autoReplyEnabled: false,
+            autoReplyRunning: false,
+            autoReplyStopped: false,
+            autoReplyWaitTime: 3000
+        },
+        
+        // Review states enum
+        ReviewState: {
+            SCRAPED: 'scraped',           // Review found and scraped from DOM
+            PROCESSING: 'processing',     // AI/analysis in progress
+            PROCESSED: 'processed',       // Analysis complete, reply generated
+            QUEUED: 'queued',            // Queued for auto-reply
+            PUBLISHING: 'publishing',     // Auto-reply in progress
+            PUBLISHED: 'published',       // Reply successfully published
+            FAILED: 'failed',            // Processing or publishing failed
+            SKIPPED: 'skipped'           // Skipped for some reason
+        },
+        
+        // Add or update a review
+        addReview: function(reviewData) {
+            const reviewId = reviewData.reviewId;
+            if (!reviewId) {
+                console.error('[ReviewManager] Cannot add review without reviewId');
+                return null;
+            }
+            
+            // Merge with existing data or create new
+            const existingReview = this.reviews.get(reviewId);
+            const updatedReview = {
+                // Default values
+                reviewId: reviewId,
+                customerName: reviewData.customerName || 'Customer',
+                extractedName: null,
+                reviewText: reviewData.reviewText || '',
+                rating: reviewData.rating || 'N/A',
+                sentiment: null,
+                complaintId: null,
+                confidence: 0,
+                selectedCategory: null,
+                reply: null,
+                state: this.ReviewState.SCRAPED,
+                includeInAutoReply: false,
+                restaurantName: reviewData.restaurantName || this.processingState.currentRestaurantName,
+                timestamp: Date.now(),
+                processingStartTime: null,
+                processingEndTime: null,
+                publishingStartTime: null,
+                publishingEndTime: null,
+                error: null,
+                // DOM references
+                element: reviewData.element || null,
+                replyTextarea: reviewData.replyTextarea || null,
+                publishBtn: reviewData.publishBtn || null,
+                // Merge existing data
+                ...(existingReview || {}),
+                // Override with new data
+                ...reviewData
+            };
+            
+            this.reviews.set(reviewId, updatedReview);
+            console.log(`[ReviewManager] ${existingReview ? 'Updated' : 'Added'} review ${reviewId} with state: ${updatedReview.state}`);
+            return updatedReview;
+        },
+        
+        // Update review state
+        updateReview: function(reviewId, updates) {
+            const review = this.reviews.get(reviewId);
+            if (!review) {
+                console.error(`[ReviewManager] Cannot update non-existent review ${reviewId}`);
+                return null;
+            }
+            
+            // Special handling for state changes
+            if (updates.state && updates.state !== review.state) {
+                console.log(`[ReviewManager] Review ${reviewId} state: ${review.state} -> ${updates.state}`);
+                
+                // Update timestamps based on state changes
+                if (updates.state === this.ReviewState.PROCESSING) {
+                    updates.processingStartTime = Date.now();
+                }
+                if (updates.state === this.ReviewState.PROCESSED) {
+                    updates.processingEndTime = Date.now();
+                }
+                if (updates.state === this.ReviewState.PUBLISHING) {
+                    updates.publishingStartTime = Date.now();
+                }
+                if (updates.state === this.ReviewState.PUBLISHED) {
+                    updates.publishingEndTime = Date.now();
+                }
+            }
+            
+            // Merge updates
+            const updatedReview = { ...review, ...updates };
+            this.reviews.set(reviewId, updatedReview);
+            
+            return updatedReview;
+        },
+        
+        // Get reviews by state
+        getReviewsByState: function(state) {
+            return Array.from(this.reviews.values()).filter(review => review.state === state);
+        },
+        
+        // Get reviews ready for auto-reply
+        getAutoReplyQueue: function() {
+            const allReviews = Array.from(this.reviews.values());
+            const queuedReviews = allReviews.filter(review => review.state === this.ReviewState.QUEUED);
+            
+            console.log(`[ReviewManager] getAutoReplyQueue - Found ${queuedReviews.length} QUEUED reviews`);
+            
+            // Debug each queued review
+            queuedReviews.forEach(review => {
+                console.log(`[ReviewManager] Queue Debug - Review ${review.reviewId}:`, {
+                    state: review.state,
+                    includeInAutoReply: review.includeInAutoReply,
+                    hasReply: !!review.reply,
+                    hasPublishBtn: !!review.publishBtn,
+                    publishBtnValid: review.publishBtn && document.contains(review.publishBtn)
+                });
+            });
+            
+            return queuedReviews.filter(review => 
+                review.includeInAutoReply &&
+                review.reply &&
+                review.publishBtn
+            );
+        },
+        
+        // Get statistics
+        getStats: function() {
+            const allReviews = Array.from(this.reviews.values());
+            return {
+                total: allReviews.length,
+                scraped: allReviews.filter(r => r.state === this.ReviewState.SCRAPED).length,
+                processing: allReviews.filter(r => r.state === this.ReviewState.PROCESSING).length,
+                processed: allReviews.filter(r => r.state === this.ReviewState.PROCESSED).length,
+                queued: allReviews.filter(r => r.state === this.ReviewState.QUEUED).length,
+                publishing: allReviews.filter(r => r.state === this.ReviewState.PUBLISHING).length,
+                published: allReviews.filter(r => r.state === this.ReviewState.PUBLISHED).length,
+                failed: allReviews.filter(r => r.state === this.ReviewState.FAILED).length,
+                skipped: allReviews.filter(r => r.state === this.ReviewState.SKIPPED).length,
+                autoReplyEnabled: allReviews.filter(r => r.includeInAutoReply).length,
+                autoReplyQueue: this.getAutoReplyQueue().length
+            };
+        },
+        
+        // Clear all data for new session
+        clearSession: function() {
+            this.reviews.clear();
+            this.processingState.processedCount = 0;
+            this.processingState.totalReviews = 0;
+            this.processingState.autoReplyRunning = false;
+            this.processingState.autoReplyStopped = false;
+            console.log('[ReviewManager] Session cleared');
+        },
+        
+        // Export data for compatibility with existing code
+        exportLegacyFormat: function() {
+            const allReviews = Array.from(this.reviews.values());
+            return allReviews.map(review => ({
+                reviewId: review.reviewId,
+                customerName: review.customerName,
+                extractedName: review.extractedName,
+                reviewText: review.reviewText,
+                rating: review.rating,
+                sentiment: review.sentiment,
+                complaintId: review.complaintId,
+                confidence: review.confidence,
+                selectedCategory: review.selectedCategory,
+                reply: review.reply,
+                replied: review.state === this.ReviewState.PUBLISHED,
+                includeInAutoReply: review.includeInAutoReply,
+                restaurantName: review.restaurantName
+            }));
+        }
+    };
+}
+
+// Legacy compatibility aliases
 if (typeof processedReviewsLog === 'undefined') {
     var processedReviewsLog = [];
 }
 
-// Store the current session URL to detect page changes
 if (typeof currentSessionUrl === 'undefined') {
     var currentSessionUrl = '';
 }
 
-// Store the restaurant name for the current page
 if (typeof currentRestaurantName === 'undefined') {
     var currentRestaurantName = '';
 }
 
-// Store complaint mappings from response bank
 if (typeof complaintMappings === 'undefined') {
     var complaintMappings = new Map();
 }
+
+// Legacy variables have been replaced by ReviewManager
+// No need for global autoReplyQueue, autoReplyProcessorRunning, and autoReplyProcessorStopped variables
 
 // Load complaint mappings from response bank
 async function loadComplaintMappings() {
@@ -95,15 +290,272 @@ window.autoZomatoTestPopup = function() {
     showLogPopup();
 };
 
+// Debug function to force send completion signal
+window.autoZomatoForceComplete = function() {
+    console.log('[AutoZomato] Force completion signal called');
+    console.log('- Current job ID:', window.autoZomatoJobId);
+    console.log('- Sent jobs:', window.autoZomatoSentJobs);
+    console.log('- Auto-reply processor running:', reviewManager.processingState.processingRunning);
+    console.log('- Auto-reply queue length:', reviewManager.getAutoReplyQueue().length);
+    console.log('- Auto-reply queue items:', reviewManager.getAutoReplyQueue().map(item => item.reviewId));
+    
+    // Clear the sent jobs set to allow resending
+    if (window.autoZomatoJobId && window.autoZomatoSentJobs.has(window.autoZomatoJobId)) {
+        window.autoZomatoSentJobs.delete(window.autoZomatoJobId);
+        console.log('- Removed job from sent jobs set');
+    }
+    
+    // Force send completion signal
+    sendProcessingCompletionSignal();
+};
+
+// Debug function to check auto-reply processor state
+window.autoZomatoCheckAutoReply = function() {
+    const reviewManager = window.AutoZomatoReviewManager;
+    const queuedReviews = reviewManager.getAutoReplyQueue();
+    
+    console.log('[AutoZomato] Auto-reply processor state:');
+    console.log('- ReviewManager autoReplyRunning:', reviewManager.processingState.autoReplyRunning);
+    console.log('- ReviewManager autoReplyStopped:', reviewManager.processingState.autoReplyStopped);
+    console.log('- ReviewManager processingRunning:', reviewManager.processingState.processingRunning);
+    console.log('- ReviewManager processingState:', reviewManager.processingState);
+    console.log('- Queued reviews count:', queuedReviews.length);
+    console.log('- Queued reviews:', queuedReviews.map(review => ({
+        reviewId: review.reviewId,
+        hasReply: !!review.reply,
+        hasPublishBtn: !!review.publishBtn,
+        publishBtnValid: review.publishBtn && document.contains(review.publishBtn)
+    })));
+    console.log('- Config auto-reply enabled:', window.autoZomatoConfig?.autoReply);
+    console.log('- ReviewManager stats:', reviewManager.getStats());
+    
+    // Check ALL queued reviews, not just those that pass getAutoReplyQueue filter
+    const allQueuedReviews = reviewManager.getReviewsByState(reviewManager.ReviewState.QUEUED);
+    console.log('- All QUEUED reviews (before filtering):', allQueuedReviews.length);
+    allQueuedReviews.forEach(review => {
+        console.log(`  - ${review.reviewId} (${review.customerName}):`, {
+            includeInAutoReply: review.includeInAutoReply,
+            hasReply: !!review.reply,
+            hasPublishBtn: !!review.publishBtn,
+            publishBtnValid: review.publishBtn && document.contains(review.publishBtn),
+            replyLength: review.reply ? review.reply.length : 0
+        });
+    });
+    
+    // Check processed reviews state
+    const processedReviews = reviewManager.getReviewsByState(reviewManager.ReviewState.PROCESSED);
+    console.log('- Processed reviews (not queued):', processedReviews.length);
+    processedReviews.forEach(review => {
+        console.log(`  - ${review.reviewId} (${review.customerName}): ${review.reply ? 'has reply' : 'no reply'}`);
+    });
+};
+
+// Debug function to check processing results and auto-reply decisions
+window.autoZomatoDebugProcessing = function() {
+    const reviewManager = window.AutoZomatoReviewManager;
+    const allReviews = reviewManager.getAllReviews();
+    const config = window.autoZomatoConfig || {};
+    
+    console.log(`[AutoZomato] === PROCESSING DEBUG ANALYSIS ===`);
+    console.log(`[AutoZomato] Config auto-reply enabled: ${config.autoReply}`);
+    console.log(`[AutoZomato] Total reviews: ${allReviews.length}`);
+    
+    const failedReviews = allReviews.filter(r => r.state === reviewManager.ReviewState.FAILED);
+    const processedReviews = allReviews.filter(r => r.state === reviewManager.ReviewState.PROCESSED);
+    const queuedReviews = allReviews.filter(r => r.state === reviewManager.ReviewState.QUEUED);
+    
+    console.log(`[AutoZomato] FAILED reviews: ${failedReviews.length}`);
+    console.log(`[AutoZomato] PROCESSED reviews: ${processedReviews.length}`);
+    console.log(`[AutoZomato] QUEUED reviews: ${queuedReviews.length}`);
+    
+    // Check each review's processing result
+    allReviews.forEach(review => {
+        console.log(`[AutoZomato] Review ${review.reviewId}:`);
+        console.log(`  - State: ${review.state}`);
+        console.log(`  - Has Reply: ${!!review.reply} (${review.reply ? review.reply.length : 0} chars)`);
+        console.log(`  - Include in Auto-Reply: ${review.includeInAutoReply}`);
+        console.log(`  - Has Publish Button: ${!!review.publishBtn}`);
+        console.log(`  - Publish Button Valid: ${review.publishBtn && document.contains(review.publishBtn)}`);
+        console.log(`  - Error: ${review.error || 'none'}`);
+        console.log(`  - Customer: ${review.customerName}`);
+        console.log(`  - Sentiment: ${review.sentiment || 'none'}`);
+        console.log(`  - First Name: ${review.extractedName || 'none'}`);
+        
+        if (review.state === reviewManager.ReviewState.PROCESSED && !review.includeInAutoReply) {
+            console.log(`  - ❌ NOT QUEUED because:`);
+            if (!config.autoReply) console.log(`    - Auto-reply disabled in config`);
+            if (!review.reply) console.log(`    - No reply generated`);
+            if (!review.publishBtn) console.log(`    - No publish button found`);
+            if (review.publishBtn && !document.contains(review.publishBtn)) console.log(`    - Publish button invalid/removed`);
+        }
+        
+        console.log(`  ---`);
+    });
+    
+    return {
+        config: config,
+        failed: failedReviews.length,
+        processed: processedReviews.length,
+        queued: queuedReviews.length,
+        autoReplyQueue: reviewManager.getAutoReplyQueue().length
+    };
+};
+
+// Enhanced debug function to check all review states and auto-reply eligibility
+window.autoZomatoDebugReviews = function() {
+    const reviewManager = window.AutoZomatoReviewManager;
+    const allReviews = reviewManager.getAllReviews();
+    
+    console.log(`[AutoZomato] === DETAILED REVIEW DEBUG ANALYSIS ===`);
+    console.log(`[AutoZomato] Total reviews in system: ${allReviews.length}`);
+    
+    let queuedCount = 0;
+    let processedCount = 0;
+    let eligibleCount = 0;
+    let eligibleIssues = [];
+    
+    allReviews.forEach(review => {
+        const state = review.state;
+        const hasReply = !!review.reply;
+        const includeInAutoReply = review.includeInAutoReply;
+        const publishBtnExists = !!(review.publishBtn && document.contains(review.publishBtn));
+        
+        console.log(`[AutoZomato] Review ${review.reviewId} (${review.customerName || 'Unknown'}):`);
+        console.log(`  - State: ${state}`);
+        console.log(`  - Has Reply: ${hasReply} (${hasReply ? review.reply.length : 0} chars)`);
+        console.log(`  - Include in Auto-Reply: ${includeInAutoReply}`);
+        console.log(`  - Publish Button Valid: ${publishBtnExists}`);
+        console.log(`  - Customer Name: ${review.customerName || 'N/A'}`);
+        console.log(`  - Review Text: ${review.reviewText ? review.reviewText.substring(0, 50) + '...' : 'N/A'}`);
+        console.log(`  - Reply: ${review.reply ? review.reply.substring(0, 50) + '...' : 'N/A'}`);
+        
+        if (state === reviewManager.ReviewState.QUEUED) {
+            queuedCount++;
+            
+            // Check if this would be eligible for auto-reply
+            if (includeInAutoReply && hasReply && publishBtnExists) {
+                eligibleCount++;
+                console.log(`  - ✅ ELIGIBLE for auto-reply`);
+            } else {
+                console.log(`  - ❌ NOT ELIGIBLE for auto-reply because:`);
+                if (!includeInAutoReply) {
+                    console.log(`    - includeInAutoReply is false`);
+                    eligibleIssues.push('includeInAutoReply=false');
+                }
+                if (!hasReply) {
+                    console.log(`    - No reply generated`);
+                    eligibleIssues.push('no reply');
+                }
+                if (!publishBtnExists) {
+                    console.log(`    - Publish button not found or invalid`);
+                    eligibleIssues.push('no publish button');
+                }
+            }
+        } else if (state === reviewManager.ReviewState.PROCESSED) {
+            processedCount++;
+            console.log(`  - PROCESSED (not queued for auto-reply)`);
+        }
+        
+        console.log(`  ---`);
+    });
+    
+    console.log(`[AutoZomato] === SUMMARY ===`);
+    console.log(`[AutoZomato] QUEUED reviews: ${queuedCount}`);
+    console.log(`[AutoZomato] PROCESSED reviews: ${processedCount}`);
+    console.log(`[AutoZomato] Eligible for auto-reply: ${eligibleCount}`);
+    console.log(`[AutoZomato] Auto-reply queue size: ${reviewManager.getAutoReplyQueue().length}`);
+    console.log(`[AutoZomato] Common issues preventing auto-reply:`, [...new Set(eligibleIssues)]);
+    
+    return {
+        total: allReviews.length,
+        queued: queuedCount,
+        processed: processedCount,
+        eligible: eligibleCount,
+        autoReplyQueue: reviewManager.getAutoReplyQueue().length,
+        issues: [...new Set(eligibleIssues)]
+    };
+};
+
+// Debug function to manually start auto-reply processor
+window.autoZomatoStartAutoReply = function() {
+    console.log('[AutoZomato] Manually starting auto-reply processor');
+    const reviewManager = window.AutoZomatoReviewManager;
+    
+    if (reviewManager.processingState.autoReplyRunning) {
+        console.log('- Processor already running');
+        return;
+    }
+    
+    const queuedReviews = reviewManager.getAutoReplyQueue();
+    if (queuedReviews.length === 0) {
+        console.log('- Queue is empty, nothing to process');
+        return;
+    }
+    
+    console.log('- Starting processor with queue length:', queuedReviews.length);
+    startAutoReplyProcessor();
+};
+
 // Debug function to check current state
 window.autoZomatoDebugState = function() {
+    const reviewManager = window.AutoZomatoReviewManager;
+    
     console.log('[AutoZomato] Debug State:');
-    console.log('- processedReviewsLog.length:', processedReviewsLog.length);
-    console.log('- currentSessionUrl:', currentSessionUrl);
-    console.log('- currentRestaurantName:', currentRestaurantName);
+    console.log('- ReviewManager stats:', reviewManager.getStats());
+    console.log('- Legacy processedReviewsLog.length:', processedReviewsLog.length);
+    console.log('- Processing state:', reviewManager.processingState);
     console.log('- window.location.href:', window.location.href);
     console.log('- indicator element:', document.getElementById('autozomato-indicator'));
     console.log('- popup element:', document.getElementById('autozomato-log-popup'));
+    console.log('- autoZomatoJobId:', window.autoZomatoJobId);
+    console.log('- autoZomatoSentJobs:', window.autoZomatoSentJobs);
+    
+    // Show all reviews with their states
+    console.log('\n[AutoZomato] All Reviews from ReviewManager:');
+    const allReviews = Array.from(reviewManager.reviews.values());
+    allReviews.forEach((review, index) => {
+        console.log(`  Review ${index + 1} (${review.reviewId}):`, {
+            state: review.state,
+            customerName: review.customerName,
+            hasReply: !!review.reply,
+            includeInAutoReply: review.includeInAutoReply,
+            hasPublishBtn: !!review.publishBtn,
+            publishBtnValid: review.publishBtn && document.contains(review.publishBtn)
+        });
+    });
+    
+    console.log('\n[AutoZomato] Auto-Reply Queue:', reviewManager.getAutoReplyQueue().map(r => r.reviewId));
+    
+    // Check for queue issues
+    const queuedReviews = reviewManager.getReviewsByState(reviewManager.ReviewState.QUEUED);
+    const validQueueItems = reviewManager.getAutoReplyQueue();
+    
+    console.log('\n[AutoZomato] Queue Analysis:');
+    console.log(`- Total QUEUED reviews: ${queuedReviews.length}`);
+    console.log(`- Valid queue items: ${validQueueItems.length}`);
+    
+    if (queuedReviews.length > validQueueItems.length) {
+        console.log('\n[AutoZomato] ⚠️ Queue Issues Found:');
+        queuedReviews.forEach(review => {
+            const issues = [];
+            if (!review.includeInAutoReply) issues.push('includeInAutoReply=false');
+            if (!review.reply) issues.push('no reply');
+            if (!review.publishBtn) issues.push('no publishBtn');
+            if (review.publishBtn && !document.contains(review.publishBtn)) issues.push('stale publishBtn');
+            
+            if (issues.length > 0) {
+                console.log(`  - Review ${review.reviewId}: ${issues.join(', ')}`);
+            }
+        });
+    }
+    
+    // Legacy compatibility check
+    console.log('\n[AutoZomato] Legacy Compatibility Check:');
+    console.log('- processedReviewsLog entries:', processedReviewsLog.map(log => ({
+        reviewId: log.reviewId,
+        replied: log.replied,
+        includeInAutoReply: log.includeInAutoReply
+    })));
 };
 
 // Function to scrape restaurant name from the page
@@ -149,6 +601,16 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     if (message.action === 'startProcessing') {
         console.log('[AutoZomato] Received startProcessing message with config:', message.config);
         
+        // Set job ID if provided
+        if (message.jobId) {
+            window.autoZomatoJobId = message.jobId;
+            console.log('[AutoZomato] Job ID set to:', message.jobId);
+        } else {
+            // Generate a unique job ID if not provided
+            window.autoZomatoJobId = 'job_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            console.log('[AutoZomato] Generated job ID:', window.autoZomatoJobId);
+        }
+        
         // Set config from message if not already set
         if (!window.autoZomatoConfig && message.config) {
             window.autoZomatoConfig = message.config;
@@ -157,6 +619,12 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
         
         // Clear any previous session data
         processedReviewsLog = [];
+        
+        // Clear sent jobs set for new processing session
+        if (typeof window.autoZomatoSentJobs !== 'undefined') {
+            window.autoZomatoSentJobs.clear();
+            console.log('[AutoZomato] Cleared sent jobs set for new processing session');
+        }
         
         // Close any existing log popup
         const existingPopup = document.getElementById('autozomato-log-popup');
@@ -174,17 +642,24 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
         // Update the global configuration
         window.autoZomatoConfig = message.config;
         
-        // Log the updated GPT mode settings for debugging
-        if (message.config && message.config.gptMode) {
-            const gptConfig = message.config.gptMode;
-            console.log('[AutoZomato] Updated GPT Mode Configuration:', {
-                enabled: gptConfig.enabled,
-                hasApiKey: !!gptConfig.apiKey,
-                apiKeyLength: gptConfig.apiKey?.length || 0,
-                isPlaceholder: gptConfig.apiKey === 'YOUR_OPENAI_API_KEY_HERE',
-                model: gptConfig.model
-            });
-        }
+        // Log the complete processing mode configuration for debugging
+        console.log('[AutoZomato] Processing Mode Configuration Update:', {
+            processingMode: message.config?.processingMode,
+            gptMode: {
+                enabled: message.config?.gptMode?.enabled,
+                hasApiKey: !!message.config?.gptMode?.apiKey,
+                apiKeyLength: message.config?.gptMode?.apiKey?.length || 0,
+                model: message.config?.gptMode?.model
+            },
+            ollamaMode: {
+                enabled: message.config?.ollamaMode?.enabled,
+                url: message.config?.ollamaMode?.url,
+                model: message.config?.ollamaMode?.model
+            },
+            offlineMode: {
+                enabled: message.config?.offlineMode?.enabled
+            }
+        });
         
         sendResponse({ success: true });
     }
@@ -194,6 +669,27 @@ async function startProcessing(promptContext) {
     try {
         console.log('[AutoZomato] Starting review processing on:', window.location.href);
         console.log('[AutoZomato] Received config:', window.autoZomatoConfig);
+        
+        // DEBUG: Show complete configuration for troubleshooting
+        if (window.autoZomatoConfig) {
+            console.log('[AutoZomato] COMPLETE CONFIG DEBUG:', {
+                processingMode: window.autoZomatoConfig.processingMode,
+                gptMode: {
+                    enabled: window.autoZomatoConfig.gptMode?.enabled,
+                    hasApiKey: !!window.autoZomatoConfig.gptMode?.apiKey,
+                    apiKeyLength: window.autoZomatoConfig.gptMode?.apiKey?.length || 0,
+                    model: window.autoZomatoConfig.gptMode?.model
+                },
+                ollamaMode: {
+                    enabled: window.autoZomatoConfig.ollamaMode?.enabled,
+                    url: window.autoZomatoConfig.ollamaMode?.url,
+                    model: window.autoZomatoConfig.ollamaMode?.model
+                },
+                offlineMode: {
+                    enabled: window.autoZomatoConfig.offlineMode?.enabled
+                }
+            });
+        }
         
         // Ensure config exists
         if (!window.autoZomatoConfig) {
@@ -205,17 +701,24 @@ async function startProcessing(promptContext) {
             };
         }
 
-        // Check if this is a new URL/page
+        // Initialize ReviewManager for new session
+        const reviewManager = window.AutoZomatoReviewManager;
         const newUrl = window.location.href;
-        if (currentSessionUrl !== newUrl) {
-            console.log(`[AutoZomato] New page detected. Previous: ${currentSessionUrl}, Current: ${newUrl}`);
-            currentSessionUrl = newUrl;
+        
+        // Check if this is a new URL/page
+        if (reviewManager.processingState.currentSessionUrl !== newUrl) {
+            console.log(`[AutoZomato] New page detected. Previous: ${reviewManager.processingState.currentSessionUrl}, Current: ${newUrl}`);
+            reviewManager.clearSession();
+            reviewManager.processingState.currentSessionUrl = newUrl;
             
-            // Clear previous session data for new page
+            // Clear legacy data for compatibility
             processedReviewsLog = [];
-            currentRestaurantName = ''; // Reset restaurant name for new page
-            console.log('[AutoZomato] Cleared previous session data for new page');
-
+            currentSessionUrl = newUrl;
+            currentRestaurantName = '';
+            
+            // Clear ReviewManager state
+            reviewManager.clearSession();
+            
             // Close any existing log popup from previous session
             const existingPopup = document.getElementById('autozomato-log-popup');
             if (existingPopup) {
@@ -224,7 +727,11 @@ async function startProcessing(promptContext) {
             }
         } else {
             // Same page, but still clear data for fresh start
+            reviewManager.clearSession();
+            
+            // Clear legacy data for compatibility
             processedReviewsLog = [];
+            
             console.log('[AutoZomato] Cleared previous session data for fresh start');
 
             // Close any existing log popup
@@ -234,6 +741,10 @@ async function startProcessing(promptContext) {
                 console.log('[AutoZomato] Closed existing log popup for fresh start');
             }
         }
+
+        // Set processing configuration
+        reviewManager.processingState.autoReplyEnabled = window.autoZomatoConfig?.autoReply || false;
+        reviewManager.processingState.autoReplyWaitTime = (window.autoZomatoConfig?.replyWaitTime || 3) * 1000;
 
         // Wait for page to fully load
         if (document.readyState !== 'complete') {
@@ -246,14 +757,16 @@ async function startProcessing(promptContext) {
 
         // Scrape restaurant name from the page
         console.log('[AutoZomato] Scraping restaurant name...');
-        currentRestaurantName = scrapeRestaurantName();
-        console.log('[AutoZomato] Current restaurant name:', currentRestaurantName);
+        const restaurantName = scrapeRestaurantName();
+        reviewManager.processingState.currentRestaurantName = restaurantName;
+        currentRestaurantName = restaurantName; // Legacy compatibility
+        console.log('[AutoZomato] Current restaurant name:', restaurantName);
 
         // Send restaurant name to background script for dashboard updates
-        console.log('[AutoZomato] Sending restaurant name to background:', currentRestaurantName);
+        console.log('[AutoZomato] Sending restaurant name to background:', restaurantName);
         chrome.runtime.sendMessage({
             action: 'updateRestaurantName',
-            restaurantName: currentRestaurantName,
+            restaurantName: restaurantName,
             url: window.location.href
         });
 
@@ -262,25 +775,17 @@ async function startProcessing(promptContext) {
         chrome.runtime.sendMessage({
             action: 'updateTabProgress',
             url: window.location.href,
-            restaurantName: currentRestaurantName,
+            restaurantName: restaurantName,
             progress: { current: 0, total: 0 },
             status: 'starting'
         });
 
         // Click Unanswered tab and get counts
         console.log('[AutoZomato] About to click Unanswered tab and extract counts...');
-        console.log('[AutoZomato] Current page URL:', window.location.href);
-        console.log('[AutoZomato] Page readyState:', document.readyState);
-        console.log('[AutoZomato] Page title:', document.title);
-        
-        // Check if we're on a reviews page
-        const isReviewsPage = window.location.href.includes('/reviews') || 
-                             document.querySelector('.res-review, [data-testid="review-card"]') || 
-                             document.querySelector('#li_unanswered');
-        console.log('[AutoZomato] Is reviews page:', isReviewsPage);
-        
         const counts = await clickUnansweredTabAndExtractCounts();
         const unansweredCount = counts.unansweredReviews;
+        reviewManager.processingState.totalReviews = unansweredCount;
+        
         console.log(`[AutoZomato] Final unanswered reviews count: ${unansweredCount}`);
         console.log(`[AutoZomato] Final total reviews count: ${counts.totalReviews}`);
 
@@ -288,24 +793,30 @@ async function startProcessing(promptContext) {
         chrome.runtime.sendMessage({
             action: 'updateTabProgress',
             url: window.location.href,
-            restaurantName: currentRestaurantName,
+            restaurantName: restaurantName,
             progress: { current: 0, total: unansweredCount },
             status: 'processing'
         });
 
         let repliesGenerated = 0;
-        createOrUpdateIndicator(`🤖 ${currentRestaurantName} | ${repliesGenerated} / ${unansweredCount} Replies`);
+        createOrUpdateIndicator(`🤖 ${restaurantName} | ${repliesGenerated} / ${unansweredCount} Replies`);
 
         const onReplySuccess = () => {
-            repliesGenerated++;
-            createOrUpdateIndicator(`🤖 ${currentRestaurantName} | ${repliesGenerated} / ${unansweredCount} Replies`);
+            // Only count replies that are actually processed, not just analyzed
+            const processedReviews = reviewManager.getReviewsByState(reviewManager.ReviewState.PROCESSED);
+            const queuedReviews = reviewManager.getReviewsByState(reviewManager.ReviewState.QUEUED);
+            const publishedReviews = reviewManager.getReviewsByState(reviewManager.ReviewState.PUBLISHED);
+            
+            repliesGenerated = processedReviews.length + queuedReviews.length + publishedReviews.length;
+            reviewManager.processingState.processedCount = repliesGenerated;
+            createOrUpdateIndicator(`🤖 ${restaurantName} | ${repliesGenerated} / ${unansweredCount} Replies`);
             
             // Send progress update to background script
-            console.log(`[AutoZomato] Sending progress update: ${repliesGenerated}/${unansweredCount} for ${currentRestaurantName}`);
+            console.log(`[AutoZomato] Sending progress update: ${repliesGenerated}/${unansweredCount} for ${restaurantName}`);
             chrome.runtime.sendMessage({
                 action: 'updateTabProgress',
                 url: window.location.href,
-                restaurantName: currentRestaurantName,
+                restaurantName: restaurantName,
                 progress: { current: repliesGenerated, total: unansweredCount },
                 status: 'processing'
             });
@@ -369,51 +880,169 @@ async function startProcessing(promptContext) {
             console.log('[AutoZomato] Stopping processing after 3 consecutive failed attempts to load more reviews.');
         }
 
-        // Update indicator on completion
-        createOrUpdateIndicator(`✅ ${currentRestaurantName} | ${repliesGenerated} / ${unansweredCount} Replies`, '#48bb78');
+        // Update indicator on completion with final accurate counts
+        const finalStats = reviewManager.getStats();
+        const processedReviews = finalStats.processed + finalStats.queued + finalStats.published;
+        createOrUpdateIndicator(`✅ ${restaurantName} | ${processedReviews} / ${unansweredCount} Replies`, '#48bb78');
 
         // Send final progress update to background script
         chrome.runtime.sendMessage({
             action: 'updateTabProgress',
             url: window.location.href,
-            restaurantName: currentRestaurantName,
-            progress: { current: repliesGenerated, total: unansweredCount },
+            restaurantName: restaurantName,
+            progress: { current: processedReviews, total: unansweredCount },
             status: 'completed'
         });
 
-        // Prepare results only for reviews that were actually processed (have entries in processedReviewsLog)
-        const results = [];
-        for (const logEntry of processedReviewsLog) {
-            results.push({
-                url: window.location.href,
-                reviewId: logEntry.reviewId,
-                reviewText: logEntry.reviewText,
-                reply: logEntry.reply || '',
-                success: logEntry.replied || false
-            });
-        }
+        console.log('[AutoZomato] Processing completed. Review generation summary:', {
+            totalProcessed: reviewManager.reviews.size,
+            readyForReply: reviewManager.getAutoReplyQueue().length,
+            autoReplyEnabled: reviewManager.processingState.autoReplyEnabled,
+            stats: reviewManager.getStats()
+        });
 
-        // Send results back to background script
-        console.log('[AutoZomato] Sending results to background (only processed reviews):', results);
-        chrome.runtime.sendMessage({
-            action: 'tabCompleted',
-            data: {
-                results: results,
-                reviewCount: processedReviewsLog.length, // Count of actually processed reviews
-                repliesCount: results.filter(function(r) { return r.success; }).length,
-                totalReviews: undefined,
-                detailedReviewLog: processedReviewsLog, // Send the detailed log data
-                restaurantName: currentRestaurantName // Add restaurant name to completion data
+        // Handle auto-reply processing
+        const queuedReviews = reviewManager.getAutoReplyQueue();
+        const allQueuedReviews = reviewManager.getReviewsByState(reviewManager.ReviewState.QUEUED);
+        
+        console.log('[AutoZomato] Auto-reply queue analysis:', {
+            autoReplyEnabled: reviewManager.processingState.autoReplyEnabled,
+            totalQueuedReviews: allQueuedReviews.length,
+            validQueueItems: queuedReviews.length,
+            queuedReviewIds: allQueuedReviews.map(r => r.reviewId),
+            validQueueIds: queuedReviews.map(r => r.reviewId),
+            queuedReviewStates: allQueuedReviews.map(r => ({
+                reviewId: r.reviewId,
+                includeInAutoReply: r.includeInAutoReply,
+                hasReply: !!r.reply,
+                hasPublishBtn: !!r.publishBtn,
+                publishBtnValid: r.publishBtn && document.contains(r.publishBtn)
+            }))
+        });
+        
+        if (reviewManager.processingState.autoReplyEnabled && queuedReviews.length > 0) {
+            console.log('[AutoZomato] Auto-reply is enabled and queue has items. Starting auto-reply processor.');
+            console.log('[AutoZomato] Queue items to process:', queuedReviews.map(item => item.reviewId));
+            
+            // Start the auto-reply processor with error handling
+            try {
+                await startAutoReplyProcessor();
+            } catch (error) {
+                console.error('[AutoZomato] Error in auto-reply processor:', error);
+                // Still send completion signal even if auto-reply fails
+                sendProcessingCompletionSignal();
             }
-        });
+        } else if (reviewManager.processingState.autoReplyEnabled && queuedReviews.length === 0) {
+            console.log('[AutoZomato] Auto-reply is enabled but queue is empty. Checking for issues...');
+            
+            if (allQueuedReviews.length > 0) {
+                console.warn('[AutoZomato] ⚠️ Found QUEUED reviews but none are valid for auto-reply. Possible issues:');
+                allQueuedReviews.forEach(review => {
+                    const issues = [];
+                    if (!review.includeInAutoReply) issues.push('includeInAutoReply=false');
+                    if (!review.reply) issues.push('no reply');
+                    if (!review.publishBtn) issues.push('no publishBtn');
+                    if (review.publishBtn && !document.contains(review.publishBtn)) issues.push('stale publishBtn');
+                    
+                    console.warn(`[AutoZomato] Review ${review.reviewId} issues: ${issues.join(', ')}`);
+                });
+            }
+            
+            console.log('[AutoZomato] Sending completion signal immediately.');
+            sendProcessingCompletionSignal();
+        } else {
+            console.log('[AutoZomato] Auto-reply is disabled. Sending completion signal immediately.');
+            sendProcessingCompletionSignal();
+        }
     } catch (error) {
-        console.error('[AutoZomato] Error during processing:', error);
-        showAutoZomatoError(error);
-        chrome.runtime.sendMessage({
-            action: 'tabError',
-            error: error && error.stack ? error.stack : (error && error.message ? error.message : String(error))
-        });
+        handleProcessingError(error);
     }
+}
+
+// Function to send processing completion signal
+function sendProcessingCompletionSignal() {
+    console.log('[AutoZomato] sendProcessingCompletionSignal called');
+    
+    const reviewManager = window.AutoZomatoReviewManager;
+    const jobId = window.autoZomatoJobId;
+    
+    console.log('[AutoZomato] Current job ID:', jobId);
+    console.log('[AutoZomato] Sent jobs set:', window.autoZomatoSentJobs);
+    
+    if (!jobId) {
+        console.error('[AutoZomato] No job ID found! This will prevent proper job completion.');
+        return;
+    }
+    
+    if (window.autoZomatoSentJobs.has(jobId)) {
+        console.warn(`[AutoZomato] Completion message for job ${jobId} already sent. Skipping.`);
+        return;
+    }
+    
+    window.autoZomatoSentJobs.add(jobId);
+    console.log('[AutoZomato] Added job ID to sent jobs set:', jobId);
+
+    // Get all reviews from ReviewManager
+    const allReviews = Array.from(reviewManager.reviews.values());
+    const results = allReviews.map(review => ({
+        url: window.location.href,
+        reviewId: review.reviewId,
+        reviewText: review.reviewText,
+        reply: review.reply || '',
+        success: review.state === reviewManager.ReviewState.PUBLISHED
+    }));
+
+    // Get statistics from ReviewManager
+    const stats = reviewManager.getStats();
+    console.log('[AutoZomato] Final ReviewManager statistics:', stats);
+
+    // DEBUG: Log the final state of all reviews
+    console.log('[AutoZomato] Final review states for completion signal:', allReviews.map(review => ({
+        reviewId: review.reviewId,
+        customerName: review.customerName,
+        state: review.state,
+        hasReply: !!review.reply,
+        published: review.state === reviewManager.ReviewState.PUBLISHED
+    })));
+
+    // Send results back to background script
+    console.log('[AutoZomato] Sending completion signal to background:', {
+        results: results.length,
+        published: results.filter(r => r.success).length,
+        stats: stats
+    });
+    
+    chrome.runtime.sendMessage({
+        action: 'tabCompleted',
+        data: {
+            results: results,
+            reviewCount: allReviews.length,
+            repliesCount: results.filter(r => r.success).length,
+            totalReviews: undefined,
+            detailedReviewLog: reviewManager.exportLegacyFormat(), // Export in legacy format
+            restaurantName: reviewManager.processingState.currentRestaurantName,
+            stats: stats // Include comprehensive statistics
+        },
+        jobId: jobId
+    });
+}
+
+// Function to handle processing errors
+function handleProcessingError(error) {
+    const jobId = window.autoZomatoJobId;
+    if (!jobId || window.autoZomatoSentJobs.has(jobId)) {
+        console.warn(`[AutoZomato] Error for job ${jobId} already sent or job ID is missing. Skipping duplicate error.`);
+        return;
+    }
+    window.autoZomatoSentJobs.add(jobId);
+
+    console.error('[AutoZomato] Error during processing:', error);
+    showAutoZomatoError(error);
+    chrome.runtime.sendMessage({
+        action: 'tabError',
+        error: error && error.stack ? error.stack : (error && error.message ? error.message : String(error)),
+        jobId: jobId
+    });
 }
 
 function showAutoZomatoError(error) {
@@ -443,71 +1072,131 @@ function showAutoZomatoError(error) {
 async function clickUnansweredTabAndExtractCounts() {
     console.log('[AutoZomato] Starting clickUnansweredTabAndExtractCounts...');
     
-    // First, check if we're on a reviews page
-    const currentUrl = window.location.href;
-    console.log('[AutoZomato] Current URL:', currentUrl);
-    
-    // Click the 'Unanswered' tab if present
+    // Find the #li_unanswered element
     const unansweredTab = document.getElementById('li_unanswered');
     console.log('[AutoZomato] Looking for #li_unanswered tab...');
     console.log('[AutoZomato] Unanswered tab element:', unansweredTab);
     
     if (unansweredTab) {
-        console.log('[AutoZomato] Found #li_unanswered tab, attempting to click...');
-        
-        // Check if the tab is visible and clickable
-        const isVisible = unansweredTab.offsetParent !== null;
-        const isClickable = !unansweredTab.disabled && unansweredTab.style.pointerEvents !== 'none';
-        
-        console.log('[AutoZomato] Tab state - visible:', isVisible, 'clickable:', isClickable);
+        console.log('[AutoZomato] Found #li_unanswered tab');
         console.log('[AutoZomato] Tab classes:', unansweredTab.className);
         console.log('[AutoZomato] Tab text content:', unansweredTab.textContent?.trim());
         
+        // Check if the tab is visible
+        const isVisible = unansweredTab.offsetParent !== null;
+        console.log('[AutoZomato] Tab visible:', isVisible);
+        
         if (isVisible) {
+            console.log('[AutoZomato] Clicking #li_unanswered tab...');
+            
+            // Try multiple click approaches to ensure the tab switches
+            let tabActivated = false;
+            
+            // Method 1: Click the tab itself
+            console.log('[AutoZomato] Method 1: Clicking tab element directly');
             unansweredTab.click();
-            console.log('[AutoZomato] ✅ Successfully clicked Unanswered tab');
             
-            // Wait for content to update
-            console.log('[AutoZomato] Waiting 1.5s for content to update...');
-            await new Promise(function(resolve) { setTimeout(resolve, 1500); });
+            // Wait a moment and check
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            let isActive = unansweredTab.classList.contains('active') || 
+                          unansweredTab.classList.contains('selected') || 
+                          unansweredTab.getAttribute('aria-selected') === 'true';
             
-            // Verify the tab is now active
-            const isActive = unansweredTab.classList.contains('active') || 
-                           unansweredTab.classList.contains('selected') || 
-                           unansweredTab.getAttribute('aria-selected') === 'true';
-            console.log('[AutoZomato] Tab active after click:', isActive);
+            if (isActive) {
+                tabActivated = true;
+                console.log('[AutoZomato] ✅ Tab activated with direct click');
+            } else {
+                console.log('[AutoZomato] ⚠️ Direct click did not activate tab, trying nested elements...');
+                
+                // Method 2: Click any anchor or button inside the tab
+                const clickableChild = unansweredTab.querySelector('a, button, span[role="button"]');
+                if (clickableChild) {
+                    console.log('[AutoZomato] Method 2: Clicking nested element:', clickableChild.tagName);
+                    clickableChild.click();
+                    
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    isActive = unansweredTab.classList.contains('active') || 
+                              unansweredTab.classList.contains('selected') || 
+                              unansweredTab.getAttribute('aria-selected') === 'true';
+                    
+                    if (isActive) {
+                        tabActivated = true;
+                        console.log('[AutoZomato] ✅ Tab activated with nested element click');
+                    }
+                }
+                
+                // Method 3: Dispatch mouse events with bubbling
+                if (!tabActivated) {
+                    console.log('[AutoZomato] Method 3: Dispatching mouse events');
+                    const mouseEvents = ['mousedown', 'mouseup', 'click'];
+                    
+                    for (const eventType of mouseEvents) {
+                        const event = new MouseEvent(eventType, {
+                            bubbles: true,
+                            cancelable: true,
+                            view: window
+                        });
+                        unansweredTab.dispatchEvent(event);
+                    }
+                    
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    isActive = unansweredTab.classList.contains('active') || 
+                              unansweredTab.classList.contains('selected') || 
+                              unansweredTab.getAttribute('aria-selected') === 'true';
+                    
+                    if (isActive) {
+                        tabActivated = true;
+                        console.log('[AutoZomato] ✅ Tab activated with mouse events');
+                    }
+                }
+                
+                // Method 4: Try clicking parent or nearby elements
+                if (!tabActivated) {
+                    console.log('[AutoZomato] Method 4: Trying parent/sibling elements');
+                    const parent = unansweredTab.parentElement;
+                    if (parent) {
+                        parent.click();
+                        
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        isActive = unansweredTab.classList.contains('active') || 
+                                  unansweredTab.classList.contains('selected') || 
+                                  unansweredTab.getAttribute('aria-selected') === 'true';
+                        
+                        if (isActive) {
+                            tabActivated = true;
+                            console.log('[AutoZomato] ✅ Tab activated with parent click');
+                        }
+                    }
+                }
+            }
+            
+            // Final wait for content to load after successful activation
+            if (tabActivated) {
+                console.log('[AutoZomato] Tab successfully activated, waiting for content to load...');
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                console.log('[AutoZomato] ✅ Content loading wait completed');
+            } else {
+                console.warn('[AutoZomato] ❌ Failed to activate tab with all methods');
+                // Still wait a bit in case the click had some effect
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
         } else {
-            console.warn('[AutoZomato] ⚠️ Unanswered tab found but not visible/clickable');
+            console.warn('[AutoZomato] ⚠️ #li_unanswered tab found but not visible');
         }
     } else {
-        console.warn('[AutoZomato] ❌ Unanswered tab (#li_unanswered) not found');
+        console.warn('[AutoZomato] ❌ #li_unanswered tab not found on page');
         
-        // Look for alternative selectors
-        const alternativeSelectors = [
-            '#li_unanswered',
-            '.unanswered-tab',
-            '[data-tab="unanswered"]',
-            'li[data-value="unanswered"]',
-            'a[href*="unanswered"]',
-            '.tab-unanswered'
-        ];
-        
-        console.log('[AutoZomato] Searching for alternative tab selectors...');
-        for (const selector of alternativeSelectors) {
-            const element = document.querySelector(selector);
-            if (element) {
-                console.log(`[AutoZomato] Found alternative tab with selector: ${selector}`, element);
-            }
-        }
-        
-        // List all tabs that exist
-        const allTabs = document.querySelectorAll('li[id*="li_"], .tab, [role="tab"]');
-        console.log('[AutoZomato] All tabs found on page:', Array.from(allTabs).map(tab => ({
-            id: tab.id,
-            className: tab.className,
-            textContent: tab.textContent?.trim(),
-            tagName: tab.tagName
-        })));
+        // Debug: List all li elements with IDs for troubleshooting
+        const allLiElements = document.querySelectorAll('li[id]');
+        console.log('[AutoZomato] All li elements with IDs found on page:');
+        Array.from(allLiElements).forEach((li, index) => {
+            console.log(`  Li ${index + 1}:`, {
+                id: li.id,
+                className: li.className,
+                textContent: li.textContent?.trim(),
+                visible: li.offsetParent !== null
+            });
+        });
     }
     
     // Extract counts from overview
@@ -564,12 +1253,7 @@ async function loadAllReviews() {
     while (tries < maxTries) {
         // Enhanced load more button detection
         const selectors = [
-            'section.load-more',
-            'section.zs-load-more', 
-            'section.btn.load-more',
             '.load-more',
-            '[class*="load-more"]',
-            '[class*="loadmore"]'
         ];
         
         loadMoreBtn = null;
@@ -664,9 +1348,86 @@ async function loadMoreAndCheck(prevCount) {
     
     if (loadMoreBtn && loadMoreBtn.offsetParent !== null) {
         console.log('[AutoZomato] Clicking load more button...');
+        
+        // Try multiple click approaches to ensure the load more actually works
+        let loadMoreWorked = false;
+        const initialReviewCount = document.querySelectorAll('.res-review').length;
+        
+        // Method 1: Direct click on the button
+        console.log('[AutoZomato] Method 1: Direct click on load more button');
         loadMoreBtn.click();
-        console.log('[AutoZomato] Load more button clicked, waiting 1.5s for content to load...');
-        await new Promise(function(resolve) { setTimeout(resolve, 1500); });
+        
+        // Wait and check if new reviews loaded
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        let newReviewCount = document.querySelectorAll('.res-review').length;
+        
+        if (newReviewCount > initialReviewCount) {
+            loadMoreWorked = true;
+            console.log('[AutoZomato] ✅ Load more worked with direct click');
+        } else {
+            console.log('[AutoZomato] ⚠️ Direct click did not load more reviews, trying nested elements...');
+            
+            // Method 2: Click any nested anchor or button
+            const clickableChild = loadMoreBtn.querySelector('a, button, span[role="button"]');
+            if (clickableChild) {
+                console.log('[AutoZomato] Method 2: Clicking nested element:', clickableChild.tagName);
+                clickableChild.click();
+                
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                newReviewCount = document.querySelectorAll('.res-review').length;
+                
+                if (newReviewCount > initialReviewCount) {
+                    loadMoreWorked = true;
+                    console.log('[AutoZomato] ✅ Load more worked with nested element click');
+                }
+            }
+            
+            // Method 3: Dispatch mouse events with bubbling
+            if (!loadMoreWorked) {
+                console.log('[AutoZomato] Method 3: Dispatching mouse events');
+                const mouseEvents = ['mousedown', 'mouseup', 'click'];
+                
+                for (const eventType of mouseEvents) {
+                    const event = new MouseEvent(eventType, {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window
+                    });
+                    loadMoreBtn.dispatchEvent(event);
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                newReviewCount = document.querySelectorAll('.res-review').length;
+                
+                if (newReviewCount > initialReviewCount) {
+                    loadMoreWorked = true;
+                    console.log('[AutoZomato] ✅ Load more worked with mouse events');
+                }
+            }
+            
+            // Method 4: Try clicking parent element
+            if (!loadMoreWorked) {
+                console.log('[AutoZomato] Method 4: Trying parent element');
+                const parent = loadMoreBtn.parentElement;
+                if (parent) {
+                    parent.click();
+                    
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+                    newReviewCount = document.querySelectorAll('.res-review').length;
+                    
+                    if (newReviewCount > initialReviewCount) {
+                        loadMoreWorked = true;
+                        console.log('[AutoZomato] ✅ Load more worked with parent click');
+                    }
+                }
+            }
+        }
+        
+        if (loadMoreWorked) {
+            console.log(`[AutoZomato] ✅ Load more successful: ${initialReviewCount} -> ${newReviewCount} reviews`);
+        } else {
+            console.warn('[AutoZomato] ❌ Failed to load more reviews with all methods');
+        }
     } else {
         console.log('[AutoZomato] Load more button not clickable or not visible');
     }
@@ -683,6 +1444,8 @@ async function scrapeReviews() {
     console.log('[AutoZomato] Scraping reviews from the page...');
     const reviews = [];
     const reviewElements = document.querySelectorAll('.res-review');
+    const reviewManager = window.AutoZomatoReviewManager;
+    let skippedAlreadyReplied = 0;
 
     reviewElements.forEach((el) => {
         try {
@@ -748,10 +1511,99 @@ async function scrapeReviews() {
 
             // Find the reply textarea and submit button to confirm it's a review that can be replied to
             const replyTextarea = el.querySelector('textarea');
-            const submitButton = el.querySelector('.zblack');
+            
+            // Enhanced publish button detection with multiple selectors
+            const publishButtonSelectors = [
+                '.zblack',
+                'button[type="submit"]',
+                'button.submit',
+                'button[class*="submit"]',
+                'button[class*="reply"]',
+                'button[class*="publish"]',
+                '.btn-submit',
+                '.submit-btn',
+                '.reply-btn',
+                '.publish-btn'
+            ];
+            
+            let submitButton = null;
+            let usedSelector = '';
+            
+            for (const selector of publishButtonSelectors) {
+                submitButton = el.querySelector(selector);
+                if (submitButton) {
+                    usedSelector = selector;
+                    break;
+                }
+            }
+            
+            // Enhanced debugging for publish button detection
+            console.log(`[AutoZomato] Publish button detection for review ${reviewId}:`);
+            console.log(`  - hasTextarea: ${!!replyTextarea}`);
+            console.log(`  - hasSubmitButton: ${!!submitButton}`);
+            console.log(`  - usedSelector: ${usedSelector}`);
+            console.log(`  - submitButtonTagName: ${submitButton ? submitButton.tagName : 'none'}`);
+            console.log(`  - submitButtonText: ${submitButton ? submitButton.textContent.trim() : 'none'}`);
+            console.log(`  - submitButtonClasses: ${submitButton ? submitButton.className : 'none'}`);
+            
+            // If still no button found, try looking for any button within the review element
+            if (!submitButton) {
+                const allButtons = el.querySelectorAll('button');
+                console.log(`[AutoZomato] No publish button found with known selectors. Found ${allButtons.length} buttons in review:`, 
+                    Array.from(allButtons).map(btn => ({
+                        tagName: btn.tagName,
+                        className: btn.className,
+                        textContent: btn.textContent.trim(),
+                        type: btn.type
+                    }))
+                );
+                
+                // Try to find a submit-like button
+                for (const btn of allButtons) {
+                    const text = btn.textContent.trim().toLowerCase();
+                    const classes = btn.className.toLowerCase();
+                    if (text.includes('submit') || text.includes('reply') || text.includes('publish') || 
+                        classes.includes('submit') || classes.includes('reply') || classes.includes('publish') ||
+                        btn.type === 'submit') {
+                        submitButton = btn;
+                        usedSelector = 'fallback-search';
+                        console.log(`[AutoZomato] Found fallback publish button:`, {
+                            tagName: btn.tagName,
+                            className: btn.className,
+                            textContent: btn.textContent.trim(),
+                            type: btn.type
+                        });
+                        break;
+                    }
+                }
+            }
+            
+            // Check if review already has a reply (skip if it does)
+            const existingReply = el.querySelector('.review-reply-text');
+            if (existingReply) {
+                console.log(`[AutoZomato] Skipping review ${reviewId} - already has reply`);
+                skippedAlreadyReplied++;
+                return; // Skip this review
+            }
 
             if (reviewId && replyTextarea) { // Check for reviewId and a textarea to reply
                 console.log(`[AutoZomato Content] Scraped review with ID: ${reviewId}, customer: ${customerName}, date: ${reviewDate ? reviewDate.toISOString().split('T')[0] : 'unknown'}`);
+                
+                // Add to ReviewManager
+                reviewManager.addReview({
+                    reviewId: reviewId,
+                    customerName: customerName,
+                    rating: rating,
+                    reviewText: reviewText,
+                    reviewDate: reviewDate,
+                    reviewDateStr: reviewDateStr,
+                    state: reviewManager.ReviewState.SCRAPED,
+                    element: el,
+                    replyTextarea: replyTextarea,
+                    publishBtn: submitButton
+                });
+                
+                // Return traditional format for compatibility
                 reviews.push({
                     reviewId,
                     customerName,
@@ -764,7 +1616,10 @@ async function scrapeReviews() {
                     submitButton: submitButton
                 });
             } else {
-                console.log(`[AutoZomato Content] Skipped review - reviewId: ${reviewId}, hasTextarea: ${!!replyTextarea}`);
+                const skipReason = !reviewId ? 'no reviewId' : 
+                                  !replyTextarea ? 'no reply textarea' : 
+                                  'unknown reason';
+                console.log(`[AutoZomato Content] Skipped review - ${skipReason} (reviewId: ${reviewId || 'missing'}, hasTextarea: ${!!replyTextarea})`);
             }
         } catch (error) {
             console.error(`[AutoZomato] Error scraping a review:`, error);
@@ -772,66 +1627,33 @@ async function scrapeReviews() {
     });
 
     console.log(`[AutoZomato] Found ${reviews.length} reviews to reply to.`);
+    if (skippedAlreadyReplied > 0) {
+        console.log(`[AutoZomato] Skipped ${skippedAlreadyReplied} reviews that already have replies.`);
+    }
+    console.log(`[AutoZomato] ReviewManager stats:`, reviewManager.getStats());
     return reviews;
 }
 
 async function replyToReviews(reviews, promptContext, onReplySuccess) {
     // Get configuration from global window object
     const config = window.autoZomatoConfig || {};
+    const reviewManager = window.AutoZomatoReviewManager;
     
     // Load the response bank from the extension's files
     const responseBankUrl = chrome.runtime.getURL('response_bank.json');
     const response = await fetch(responseBankUrl);
     const responseBank = await response.json();
 
-    // Filter out reviews that have already been processed
-    const processedReviewIds = processedReviewsLog.map(log => log.reviewId);
-    let filteredReviews = reviews.filter(review => !processedReviewIds.includes(review.reviewId));
-    
-    // Apply date range filtering if configured
-    if (config.dateRange && (config.dateRange.startDate || config.dateRange.endDate)) {
-        const startDate = config.dateRange.startDate ? new Date(config.dateRange.startDate) : null;
-        const endDate = config.dateRange.endDate ? new Date(config.dateRange.endDate) : null;
-        
-        // Set end date to end of day (23:59:59) for inclusive comparison
-        if (endDate) {
-            endDate.setHours(23, 59, 59, 999);
-        }
-        
-        const beforeFilterCount = filteredReviews.length;
-        filteredReviews = filteredReviews.filter(review => {
-            if (!review.reviewDate || isNaN(review.reviewDate.getTime())) {
-                // If we can't determine the date, include the review (safer approach)
-                console.warn(`[AutoZomato] Including review ${review.reviewId} - could not determine date`);
-                return true;
-            }
-            
-            const reviewDate = review.reviewDate;
-            let includeReview = true;
-            
-            if (startDate && reviewDate < startDate) {
-                includeReview = false;
-            }
-            
-            if (endDate && reviewDate > endDate) {
-                includeReview = false;
-            }
-            
-            if (!includeReview) {
-                console.log(`[AutoZomato] Filtering out review ${review.reviewId} - date ${reviewDate.toISOString().split('T')[0]} outside range ${startDate ? startDate.toISOString().split('T')[0] : 'any'} to ${endDate ? endDate.toISOString().split('T')[0] : 'any'}`);
-            }
-            
-            return includeReview;
-        });
-        
-        console.log(`[AutoZomato] Date filtering: ${beforeFilterCount} reviews -> ${filteredReviews.length} reviews (filtered out ${beforeFilterCount - filteredReviews.length} reviews outside date range)`);
-    }
-    
-    const unprocessedReviews = filteredReviews;
+    // Filter out reviews that have already been processed using ReviewManager
+    const processedReviewIds = Array.from(reviewManager.reviews.keys());
+    const unprocessedReviews = reviews.filter(review => {
+        const existingReview = reviewManager.reviews.get(review.reviewId);
+        return !existingReview || existingReview.state === reviewManager.ReviewState.SCRAPED;
+    });
     
     if (unprocessedReviews.length !== reviews.length) {
         const totalFiltered = reviews.length - unprocessedReviews.length;
-        console.log(`[AutoZomato] Filtered out ${totalFiltered} reviews (processed + date range) out of ${reviews.length} total`);
+        console.log(`[AutoZomato] Filtered out ${totalFiltered} already processed reviews out of ${reviews.length} total`);
         console.log(`[AutoZomato] Processing ${unprocessedReviews.length} new reviews`);
     } else {
         console.log(`[AutoZomato] Processing ${unprocessedReviews.length} reviews (all new)`);
@@ -841,30 +1663,70 @@ async function replyToReviews(reviews, promptContext, onReplySuccess) {
         try {
             console.log(`[AutoZomato] Analyzing review:`, review);
 
-            // Route to appropriate processing function based on mode
-            console.log(`[AutoZomato] Checking GPT mode configuration:`, {
-                config: config,
-                hasGptMode: !!config.gptMode,
-                gptModeEnabled: config.gptMode?.enabled,
-                hasApiKey: !!config.gptMode?.apiKey,
-                fullGptConfig: config.gptMode
+            // Update review state to PROCESSING
+            reviewManager.updateReview(review.reviewId, {
+                state: reviewManager.ReviewState.PROCESSING
             });
-            
-            if (config && config.gptMode && config.gptMode.enabled && config.gptMode.apiKey) {
-                console.log(`[AutoZomato] Using GPT mode processing`);
-                await processReviewWithGPTMode(review, config, onReplySuccess);
-            } else {
-                console.log(`[AutoZomato] Using Ollama mode processing - reasons:`, {
-                    noConfig: !config,
-                    noGptMode: !config?.gptMode,
-                    notEnabled: !config?.gptMode?.enabled,
-                    noApiKey: !config?.gptMode?.apiKey
-                });
-                await processReviewWithOllamaMode(review, config, promptContext, responseBank, onReplySuccess);
+
+            // Route to appropriate processing function based on mode
+            const processingMode = config.processingMode || 'ollama';
+            let processingResult = null;
+            switch (processingMode) {
+                case 'gpt':
+                    if (config.gptMode && config.gptMode.enabled && config.gptMode.apiKey) {
+                        processingResult = await processReviewWithGPTMode(review, config, onReplySuccess);
+                    } else {
+                        throw new Error('GPT mode is not properly configured. Please check your API key.');
+                    }
+                    break;
+                case 'ollama':
+                    if (config.ollamaMode && config.ollamaMode.enabled) {
+                        processingResult = await processReviewWithOllamaMode(review, config, promptContext, responseBank, onReplySuccess);
+                    } else {
+                        throw new Error('Ollama mode is not available. Please check if Ollama is running.');
+                    }
+                    break;
+                case 'offline':
+                    processingResult = await processReviewWithOfflineMode(review, config, responseBank, onReplySuccess);
+                    break;
+                default:
+                    processingResult = await processReviewWithOllamaMode(review, config, promptContext, responseBank, onReplySuccess);
+                    break;
             }
 
+            if (processingResult) {
+                // Force includeInAutoReply to true if auto-reply is enabled and reply exists
+                let shouldQueue = false;
+                if (config.autoReply && processingResult.reply) {
+                    shouldQueue = true;
+                }
+                reviewManager.updateReview(review.reviewId, {
+                    state: shouldQueue ? reviewManager.ReviewState.QUEUED : reviewManager.ReviewState.PROCESSED,
+                    extractedName: processingResult.firstName || 'N/A',
+                    sentiment: processingResult.sentiment || 'Unknown',
+                    complaintId: processingResult.complaintId || 'None',
+                    confidence: processingResult.confidence || 1.0,
+                    selectedCategory: processingResult.selectedCategory || 'Default',
+                    reply: processingResult.reply || '',
+                    includeInAutoReply: shouldQueue // always true if queued
+                });
+                // Only log after publishing (handled in auto-reply processor)
+                console.log(`[AutoZomato] ✅ Review ${review.reviewId} processed and ${shouldQueue ? 'QUEUED' : 'PROCESSED'} (logging deferred until published)`);
+                onReplySuccess();
+                if (document.getElementById('autozomato-log-popup') && !reviewManager.processingState.autoReplyRunning) {
+                    renderLogPopupContent().catch(console.error);
+                }
+            } else {
+                reviewManager.updateReview(review.reviewId, {
+                    state: reviewManager.ReviewState.FAILED,
+                    error: 'Processing returned null result'
+                });
+            }
         } catch (error) {
-            console.error('[AutoZomato] Error processing review:', error);
+            reviewManager.updateReview(review.reviewId, {
+                state: reviewManager.ReviewState.FAILED,
+                error: error.message || 'Processing failed'
+            });
         }
     }
 }
@@ -1039,11 +1901,11 @@ function handleReplyEdit(event) {
     editableDiv.updateTimeout = setTimeout(() => {
         const newReply = editableDiv.textContent.trim();
         
-        // Update the processedReviewsLog
-        const logEntry = processedReviewsLog.find(log => log.reviewId === reviewId);
-        if (logEntry) {
-            logEntry.reply = newReply;
-        }
+        // Update the ReviewManager
+        const reviewManager = window.AutoZomatoReviewManager;
+        reviewManager.updateReview(reviewId, {
+            reply: newReply
+        });
         
         // Find the corresponding textarea on the page and update it
         const reviewElement = document.querySelector(`.res-review[data-review_id="${reviewId}"]`);
@@ -1078,15 +1940,15 @@ function handleIncludeCheckboxChange(event) {
     const reviewId = row.getAttribute('data-review-id');
     if (!reviewId) return;
     
-    // Update the processedReviewsLog
-    const logEntry = processedReviewsLog.find(log => log.reviewId === reviewId);
-    if (logEntry) {
-        logEntry.includeInAutoReply = checkbox.checked;
-        console.log(`[AutoZomato] Updated includeInAutoReply for review ${reviewId} to ${checkbox.checked}`);
-        
-        // Update the header summary
-        updateLogPopupHeader();
-    }
+    // Update the ReviewManager
+    const reviewManager = window.AutoZomatoReviewManager;
+    reviewManager.updateReview(reviewId, {
+        includeInAutoReply: checkbox.checked
+    });
+    console.log(`[AutoZomato] Updated includeInAutoReply for review ${reviewId} to ${checkbox.checked}`);
+    
+    // Update the header summary
+    updateLogPopupHeader();
 }
 
 // Create complaint selector dropdown
@@ -1129,33 +1991,42 @@ function createComplaintSelector(currentComplaintId, reviewId) {
 // Handle complaint type change
 async function handleComplaintChange(event, reviewId) {
     const newComplaintId = event.target.value;
-    const logEntry = processedReviewsLog.find(log => log.reviewId === reviewId);
+    const reviewManager = window.AutoZomatoReviewManager;
+    const review = reviewManager.reviews.get(reviewId);
     
-    if (!logEntry) {
-        console.warn('[AutoZomato] No log entry found for review:', reviewId);
+    if (!review) {
+        console.warn('[AutoZomato] No review found for ID:', reviewId);
         return;
     }
     
-    console.log(`[AutoZomato] Complaint changed for review ${reviewId}: ${logEntry.complaintId} -> ${newComplaintId}`);
+    console.log(`[AutoZomato] Complaint changed for review ${reviewId}: ${review.complaintId} -> ${newComplaintId}`);
     
     // Track the correction
-    if (logEntry.complaintId !== newComplaintId) {
-        if (!logEntry.originalComplaintId) {
-            logEntry.originalComplaintId = logEntry.complaintId;
+    if (review.complaintId !== newComplaintId) {
+        if (!review.originalComplaintId) {
+            reviewManager.updateReview(reviewId, {
+                originalComplaintId: review.complaintId
+            });
         }
-        logEntry.correctedComplaintId = newComplaintId;
-        logEntry.correctionTimestamp = new Date().toISOString();
+        reviewManager.updateReview(reviewId, {
+            correctedComplaintId: newComplaintId,
+            correctionTimestamp: new Date().toISOString()
+        });
     }
     
     // Update complaint ID
-    logEntry.complaintId = newComplaintId;
+    reviewManager.updateReview(reviewId, {
+        complaintId: newComplaintId
+    });
     
     // Regenerate reply if complaint type is selected
     if (newComplaintId && complaintMappings.has(newComplaintId)) {
         try {
-            const newReply = await generateReplyFromComplaint(logEntry, newComplaintId);
+            const newReply = await generateReplyFromComplaint(review, newComplaintId);
             if (newReply) {
-                logEntry.reply = newReply;
+                reviewManager.updateReview(reviewId, {
+                    reply: newReply
+                });
                 
                 // Update the popup display
                 const row = event.target.closest('tr');
@@ -1190,7 +2061,7 @@ async function handleComplaintChange(event, reviewId) {
 }
 
 // Generate reply based on complaint type
-async function generateReplyFromComplaint(logEntry, complaintId) {
+async function generateReplyFromComplaint(review, complaintId) {
     try {
         // Load response bank if not already loaded
         if (complaintMappings.size === 0) {
@@ -1208,7 +2079,7 @@ async function generateReplyFromComplaint(logEntry, complaintId) {
         // Handle different response structures
         if (mapping.type === 'category') {
             // Star-based categories have Written Review vs No Written Review
-            const hasWrittenReview = logEntry.review && logEntry.review.trim().length > 0;
+            const hasWrittenReview = review.reviewText && review.reviewText.trim().length > 0;
             const responseType = hasWrittenReview ? 'Written Review' : 'No Written Review';
             templates = mapping.responses[responseType] || [];
         } else if (mapping.type === 'complaint') {
@@ -1224,10 +2095,14 @@ async function generateReplyFromComplaint(logEntry, complaintId) {
         // Select random template
         const template = templates[Math.floor(Math.random() * templates.length)];
         
+        // Get restaurant name from ReviewManager
+        const reviewManager = window.AutoZomatoReviewManager;
+        const restaurantName = reviewManager.processingState.currentRestaurantName || 'our restaurant';
+        
         // Replace placeholders
         let reply = template
-            .replace(/{CustomerName}/g, logEntry.extractedName || logEntry.customerName || 'valued customer')
-            .replace(/{LocationName}/g, currentRestaurantName || 'our restaurant');
+            .replace(/{CustomerName}/g, review.extractedName || review.customerName || 'valued customer')
+            .replace(/{LocationName}/g, restaurantName);
         
         console.log(`[AutoZomato] Generated reply from complaint ${complaintId}:`, reply);
         return reply;
@@ -1243,8 +2118,9 @@ function updateCorrectionIndicator(reviewId) {
     const row = document.querySelector(`#autozomato-log-popup tr[data-review-id="${reviewId}"]`);
     if (!row) return;
     
-    const logEntry = processedReviewsLog.find(log => log.reviewId === reviewId);
-    if (!logEntry) return;
+    const reviewManager = window.AutoZomatoReviewManager;
+    const review = reviewManager.reviews.get(reviewId);
+    if (!review) return;
     
     let correctionCell = row.querySelector('.correction-indicator');
     if (!correctionCell) {
@@ -1261,17 +2137,181 @@ function updateCorrectionIndicator(reviewId) {
         row.appendChild(correctionCell);
     }
     
-    if (logEntry.correctedComplaintId) {
-        const originalName = complaintMappings.get(logEntry.originalComplaintId)?.name || logEntry.originalComplaintId;
-        const correctedName = complaintMappings.get(logEntry.correctedComplaintId)?.name || logEntry.correctedComplaintId;
+    if (review.correctedComplaintId) {
+        const originalName = complaintMappings.get(review.originalComplaintId)?.name || review.originalComplaintId;
+        const correctedName = complaintMappings.get(review.correctedComplaintId)?.name || review.correctedComplaintId;
         correctionCell.innerHTML = `
             <span style="color: #e53e3e; text-decoration: line-through;">${originalName}</span><br>
             <span style="color: #48bb78;">→ ${correctedName}</span>
         `;
-        correctionCell.title = `Corrected on ${new Date(logEntry.correctionTimestamp).toLocaleString()}`;
+        correctionCell.title = `Corrected on ${new Date(review.correctionTimestamp).toLocaleString()}`;
     } else {
         correctionCell.innerHTML = '';
         correctionCell.title = '';
+    }
+}
+
+// Helper function to make GPT API request
+async function makeGPTRequest(prompt, gptConfig) {
+    try {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${gptConfig.apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: gptConfig.model || 'gpt-4o-mini',
+                messages: [
+                    {
+                        role: 'user',
+                        content: prompt
+                    }
+                ],
+                max_tokens: 300,
+                temperature: 0.1
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`OpenAI API error: ${response.status} ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        const content = data.choices[0].message.content.trim();
+        
+        console.log('[AutoZomato] GPT API response:', content);
+        
+        return {
+            response: content,
+            success: true
+        };
+        
+    } catch (error) {
+        console.error('[AutoZomato] GPT API request failed:', error);
+        throw error;
+    }
+}
+
+// Fallback function for extracting first name
+function extractFirstNameFallback(customerName) {
+    const extractedName = smartExtractFirstName(customerName);
+    return extractedName ? extractedName.name : null;
+}
+
+// GPT API Request Function
+async function processReviewWithGPT(review, config) {
+    // Load response bank to get complaint descriptions
+    let complaintDescriptions = '';
+    try {
+        const responseBankUrl = chrome.runtime.getURL('response_bank.json');
+        const response = await fetch(responseBankUrl);
+        const responseBank = await response.json();
+        
+        // Build complaint descriptions from response bank
+        if (responseBank.complaints && responseBank.complaints.length > 0) {
+            const complaintList = responseBank.complaints.map(complaint => 
+                `   - "${complaint.id}" = ${complaint.storyName}`
+            ).join('\n');
+            complaintDescriptions = complaintList;
+        } else {
+            // Fallback to hardcoded list if response bank fails
+            complaintDescriptions = `   - "1" = Incorrect Orders Received (wrong item delivered)
+   - "2" = Delivery Delays by Zomato (late delivery)
+   - "3" = Spill/Packaging Issues (food spilled, container broke)
+   - "4" = Cooking Instructions Not Followed (spice level, special requests ignored)
+   - "5" = Zomato Delivery-Related Issues (delivery person problems)
+   - "6" = Missing Cutlery (no spoon, fork, utensils)
+   - "7" = Rude Staff (restaurant staff behavior)
+   - "8" = Missing Item in Order (incomplete order)
+   - "9" = Food Safety – Foreign Materials (hair, plastic in food)`;
+        }
+    } catch (error) {
+        console.warn('[AutoZomato] Failed to load response bank for GPT prompt, using fallback:', error);
+        // Fallback to hardcoded list
+        complaintDescriptions = `   - "1" = Incorrect Orders Received (wrong item delivered)
+   - "2" = Delivery Delays by Zomato (late delivery)
+   - "3" = Spill/Packaging Issues (food spilled, container broke)
+   - "4" = Cooking Instructions Not Followed (spice level, special requests ignored)
+   - "5" = Zomato Delivery-Related Issues (delivery person problems)
+   - "6" = Missing Cutlery (no spoon, fork, utensils)
+   - "7" = Rude Staff (restaurant staff behavior)
+   - "8" = Missing Item in Order (incomplete order)
+   - "9" = Food Safety – Foreign Materials (hair, plastic in food)`;
+    }
+
+    const gptPrompt = `You are an AI assistant for a deliveries only restaurant review management system. Analyze this customer review and extract the following information in a single response.
+
+
+**RESTAURANT REVIEW ANALYSIS**
+
+Customer Name: "${review.customerName}"
+Review Text: "${review.reviewText}"
+Rating: ${review.rating}/5 stars
+
+**TASKS TO COMPLETE:**
+
+1. **EXTRACT FIRST NAME:**
+   - If the name is a clear real name (e.g., "Rahul Kumar"), extract the first part ("Rahul")
+   - If it's a username with an embedded name (e.g., "rahul123"), extract the name part ("Rahul") 
+   - If it's a valid standalone name (e.g., "Zak"), use that
+   - If the name is generic, nonsensical, or just initials (e.g., "FD", "User123", "FoodLover"), return null
+   - NEVER invent or guess a name - only extract what is clearly present
+
+2. **ANALYZE SENTIMENT:**
+   - Determine if the review is: Positive, Negative, or Neutral
+   - Base this on the overall tone and rating
+
+3. **DETECT SPECIFIC COMPLAINTS:**
+   - Only assign a complaint ID if the review EXPLICITLY mentions one of these specific issues:
+${complaintDescriptions}
+   - Return null if no specific complaint is detected
+   - Be MODERATE - general dissatisfaction like "food was bad" should NOT get a complaint ID
+   
+   
+
+**OUTPUT FORMAT:**
+Return ONLY a valid JSON object with these exact keys:
+{
+  "firstName": "string or null",
+  "sentiment": "Positive|Negative|Neutral", 
+  "complaintId": "string or null"
+}
+
+**EXAMPLES:**
+Customer: "john_foodie", Review: "Ordered chicken got mutton instead", Rating: 1
+→ {"firstName": "john", "sentiment": "Negative", "complaintId": "1"}
+
+Customer: "FoodLover123", Review: "Great taste and fast delivery!", Rating: 5  
+→ {"firstName": null, "sentiment": "Positive", "complaintId": null}
+
+Customer: "Sarah123", Review: "Food was cold and missing spoon", Rating: 2
+→ {"firstName": "Sarah", "sentiment": "Negative", "complaintId": "6"}
+
+Now analyze the review above and return the JSON response:`;
+
+    try {
+        const gptResult = await makeGPTRequest(gptPrompt, config.gptMode);
+        const parsedResult = cleanAndParseJSON(gptResult.response);
+        
+        console.log('[AutoZomato] GPT analysis result:', parsedResult);
+        
+        // Return only the analysis data - NO REPLY GENERATION
+        const result = {
+            firstName: parsedResult.firstName || null,
+            sentiment: parsedResult.sentiment || 'Neutral',
+            complaintId: parsedResult.complaintId || null
+        };
+        
+        return result;
+    } catch (error) {
+        console.error('[AutoZomato] GPT analysis failed:', error);
+        // Fallback to basic processing
+        return {
+            firstName: extractFirstNameFallback(review.customerName),
+            sentiment: 'Neutral',
+            complaintId: null
+        };
     }
 }
 
@@ -1334,8 +2374,20 @@ async function processReviewWithGPTMode(review, config, onReplySuccess) {
         }
         
         finalReply = finalReply.replace(/,?\s?{CustomerName}/g, '');
-        finalReply = finalReply.replace(/{LocationName}/g, review.locationName || '');
+        
+        // Get restaurant name from ReviewManager
+        const reviewManager = window.AutoZomatoReviewManager;
+        const restaurantName = reviewManager.processingState.currentRestaurantName || 'our restaurant';
+        finalReply = finalReply.replace(/{LocationName}/g, restaurantName);
+        
         finalReply = finalReply.replace(/\s+/g, ' ').trim();
+
+        // Fill in the reply textarea
+        const replyTextarea = review.replyTextarea;
+        if (replyTextarea) {
+            replyTextarea.value = finalReply;
+            replyTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+        }
 
         // Send the processed review data to background
         const reviewDataToSend = {
@@ -1348,7 +2400,7 @@ async function processReviewWithGPTMode(review, config, onReplySuccess) {
             complaintId: gptResult.complaintId,
             reply: finalReply,
             replied: false,
-            restaurantName: currentRestaurantName
+            restaurantName: reviewManager.processingState.currentRestaurantName
         };
         
         console.log('[AutoZomato Content] Sending GPT review data to background:', {
@@ -1363,42 +2415,194 @@ async function processReviewWithGPTMode(review, config, onReplySuccess) {
             reviewData: reviewDataToSend
         });
         
-        // Log the review for popup display
-        const reviewLogEntry = {
-            reviewId: review.reviewId,
-            customerName: review.customerName,
-            extractedName: gptResult.firstName || 'N/A',
-            reviewText: review.reviewText || '',
-            rating: review.rating || 'N/A',
-            sentiment: gptResult.sentiment || 'Unknown',
-            complaintId: gptResult.complaintId || 'None',
-            confidence: 1.0, // GPT results are considered high confidence
+        // Return data for the main function to create the single log entry
+        return {
+            firstName: gptResult.firstName,
+            sentiment: gptResult.sentiment,
+            complaintId: gptResult.complaintId,
             selectedCategory: selectedCategory,
             reply: finalReply,
-            replied: false,
-            includeInAutoReply: true,
-            restaurantName: currentRestaurantName
+            confidence: 1.0,
+            publishBtn: review.submitButton
         };
         
-        processedReviewsLog.push(reviewLogEntry);
+    } catch (error) {
+        console.error('[AutoZomato] Error in GPT mode processing:', error);
+        
+        // Return fallback data to prevent processing from stopping
+        return {
+            firstName: extractFirstNameFallback(review.customerName),
+            sentiment: 'Neutral',
+            complaintId: null,
+            selectedCategory: 'Error - Fallback',
+            reply: 'Thank you for your review! We appreciate your feedback.',
+            confidence: 0.1,
+            publishBtn: review.submitButton
+        };
+    }
+}
+
+// Offline Mode Processing - Template-based responses without AI
+async function processReviewWithOfflineMode(review, config, responseBank, onReplySuccess) {
+    try {
+        console.log(`[AutoZomato] Processing review in offline mode: ${review.reviewId}`);
+        
+        // Step 1: Basic name extraction using local logic
+        const extractedName = smartExtractFirstName(review.customerName);
+        const firstName = extractedName ? extractedName.name : 'Customer';
+        const confidence = extractedName ? extractedName.confidence : 0;
+        
+        // Step 2: Simple sentiment analysis based on keywords
+        const sentiment = analyzeOfflineSentiment(review.reviewText || '');
+        
+        // Step 3: Basic complaint detection
+        const complaintId = detectOfflineComplaint(review.reviewText || '');
+        
+        // Step 4: Generate reply using response bank
+        let replyTemplate = '';
+        let selectedCategory = '';
+        
+        if (complaintId && complaintId !== 'None') {
+            // Use complaint-specific template
+            const complaintTemplates = responseBank.complaints[complaintId];
+            if (complaintTemplates && complaintTemplates.length > 0) {
+                const randomTemplate = complaintTemplates[Math.floor(Math.random() * complaintTemplates.length)];
+                replyTemplate = randomTemplate.template;
+                selectedCategory = `Complaint: ${complaintId}`;
+            }
+        } else if (sentiment === 'Positive') {
+            // Use positive response template
+            const positiveTemplates = responseBank.positive;
+            if (positiveTemplates && positiveTemplates.length > 0) {
+                const randomTemplate = positiveTemplates[Math.floor(Math.random() * positiveTemplates.length)];
+                replyTemplate = randomTemplate.template;
+                selectedCategory = 'Positive Response';
+            }
+        } else {
+            // Use neutral template
+            const neutralTemplates = responseBank.neutral;
+            if (neutralTemplates && neutralTemplates.length > 0) {
+                const randomTemplate = neutralTemplates[Math.floor(Math.random() * neutralTemplates.length)];
+                replyTemplate = randomTemplate.template;
+                selectedCategory = 'Neutral Response';
+            }
+        }
+        
+        // Step 5: Personalize the reply
+        const personalizedReply = replyTemplate.replace(/\{firstName\}/g, firstName);
+        const finalReply = personalizedReply || `Thank you for your feedback, ${firstName}! We appreciate your time and will continue to improve our service.`;
+        
+        // Step 6: Fill in the reply field
+        const replyField = review.replyTextarea;
+        if (replyField) {
+            replyField.value = finalReply;
+            replyField.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        
+        // Step 7: Send data to background script
+        const reviewDataToSend = {
+            reviewId: review.reviewId,
+            customerName: review.customerName,
+            extractedName: firstName,
+            rating: review.rating || 'N/A',
+            reviewText: review.reviewText || '',
+            reply: finalReply,
+            sentiment: sentiment,
+            complaintId: complaintId,
+            confidence: confidence,
+            selectedCategory: selectedCategory,
+            restaurantName: window.AutoZomatoReviewManager.processingState.currentRestaurantName,
+            replied: false,
+            timestamp: new Date().toISOString()
+        };
+        
+        console.log('[AutoZomato Content] Sending offline review data to background:', {
+            reviewId: reviewDataToSend.reviewId,
+            customerName: reviewDataToSend.customerName,
+            restaurantName: reviewDataToSend.restaurantName,
+            hasReply: !!reviewDataToSend.reply
+        });
+        
+        chrome.runtime.sendMessage({
+            action: 'reviewProcessed',
+            reviewData: reviewDataToSend
+        });
         
         // Update counter
         onReplySuccess();
         
-        // Post reply if auto-reply is enabled
-        if (config.autoReply && finalReply) {
-            await postReply(review, finalReply, config);
-            reviewLogEntry.replied = true;
-        }
-        
-        // Update log popup if open
-        if (document.getElementById('autozomato-log-popup')) {
-            renderLogPopupContent().catch(console.error);
-        }
+        // Return data for the main function to handle state management
+        return {
+            firstName: firstName,
+            sentiment: sentiment,
+            complaintId: complaintId,
+            selectedCategory: selectedCategory,
+            reply: finalReply,
+            confidence: confidence,
+            publishBtn: review.submitButton
+        };
         
     } catch (error) {
-        console.error('[AutoZomato] Error in GPT mode processing:', error);
+        console.error('[AutoZomato] Error in offline mode processing:', error);
+        
+        // Return fallback data to prevent processing from stopping
+        return {
+            firstName: extractFirstNameFallback(review.customerName),
+            sentiment: 'Neutral',
+            complaintId: null,
+            selectedCategory: 'Error - Fallback',
+            reply: 'Thank you for your review! We appreciate your feedback.',
+            confidence: 0.1,
+            publishBtn: review.submitButton
+        };
     }
+}
+
+// Offline sentiment analysis using keywords
+function analyzeOfflineSentiment(reviewText) {
+    const text = reviewText.toLowerCase();
+    
+    const positiveKeywords = ['good', 'great', 'excellent', 'amazing', 'fantastic', 'love', 'perfect', 'wonderful', 'awesome', 'delicious', 'tasty', 'fresh', 'quick', 'fast', 'recommend', 'satisfied', 'happy', 'pleased', 'nice', 'best'];
+    const negativeKeywords = ['bad', 'terrible', 'awful', 'horrible', 'worst', 'hate', 'disgusting', 'cold', 'late', 'slow', 'rude', 'dirty', 'stale', 'expired', 'wrong', 'missing', 'disappointed', 'unsatisfied', 'poor', 'waste'];
+    
+    let positiveCount = 0;
+    let negativeCount = 0;
+    
+    positiveKeywords.forEach(keyword => {
+        if (text.includes(keyword)) positiveCount++;
+    });
+    
+    negativeKeywords.forEach(keyword => {
+        if (text.includes(keyword)) negativeCount++;
+    });
+    
+    if (positiveCount > negativeCount) return 'Positive';
+    if (negativeCount > positiveCount) return 'Negative';
+    return 'Neutral';
+}
+
+// Offline complaint detection using keywords
+function detectOfflineComplaint(reviewText) {
+    const text = reviewText.toLowerCase();
+    
+    const complaintKeywords = {
+        'Food Quality': ['cold', 'stale', 'expired', 'taste', 'flavor', 'spoiled', 'bad taste', 'not fresh', 'undercooked', 'overcooked', 'burnt', 'tasteless'],
+        'Service': ['rude', 'slow', 'late', 'wait', 'staff', 'behavior', 'attitude', 'service', 'ignored', 'unprofessional'],
+        'Delivery': ['late delivery', 'delayed', 'never arrived', 'wrong address', 'delivery boy', 'damaged', 'spilled', 'missing items'],
+        'Packaging': ['leaking', 'broken', 'poor packaging', 'messy', 'presentation', 'container', 'spillage'],
+        'Hygiene': ['dirty', 'unclean', 'hair', 'hygiene', 'sanitize', 'contaminated', 'food poisoning'],
+        'Pricing': ['expensive', 'overpriced', 'costly', 'money', 'refund', 'value', 'price', 'charges']
+    };
+    
+    for (const [category, keywords] of Object.entries(complaintKeywords)) {
+        for (const keyword of keywords) {
+            if (text.includes(keyword)) {
+                return category;
+            }
+        }
+    }
+    
+    return 'None';
 }
 
 // Ollama Mode Processing - Multi-step approach  
@@ -1481,8 +2685,8 @@ REVIEW: "${review.reviewText || 'No text'}" (${review.rating}/5 stars)
 COMPLAINT DETECTION (be VERY conservative - only exact matches):
 1 = Wrong order ("wrong order", "different item", "not what I ordered")
 2 = Late delivery ("late delivery", "slow delivery", "took hours", "delayed")  
-3 = Spilled food ("spilled", "leaked", "broken container")
-4 = Wrong spice level ("too spicy", "not spicy", "instructions ignored")
+3 = Spill/Packaging Issues ("spilled", "leaked", "broken container")
+4 = Cooking Instructions Not Followed ("too spicy", "not spicy", "instructions ignored")
 5 = Rude delivery person ("delivery person rude", "driver rude")
 6 = Missing cutlery ("no spoon", "missing spoon", "no cutlery")
 7 = Rude staff ("staff rude", "unprofessional staff")
@@ -1611,28 +2815,27 @@ RESPOND WITH JSON ONLY - NO OTHER TEXT:
         }
         
         finalReply = finalReply.replace(/,?\s?{CustomerName}/g, '');
-        finalReply = finalReply.replace(/{LocationName}/g, review.locationName || '');
+        
+        // Get restaurant name from ReviewManager
+        const reviewManager = window.AutoZomatoReviewManager;
+        const restaurantName = reviewManager.processingState.currentRestaurantName || 'our restaurant';
+        finalReply = finalReply.replace(/{LocationName}/g, restaurantName);
+        
         finalReply = finalReply.replace(/\s+/g, ' ').trim();
 
-        // Step 5: Insert reply and post if auto-reply enabled
+        // Step 5: Insert reply and prepare return data
         const textarea = review.replyTextarea;
         const publishBtn = review.submitButton;
-        let repliedStatus = false;
 
         if (textarea) {
             textarea.value = finalReply;
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
             
             onReplySuccess();
-
-            if (config.autoReply && publishBtn) {
-                publishBtn.click();
-                repliedStatus = true;
-            }
         }
 
-        // Step 6: Log the results
-        const reviewLogEntry = {
+        // Send real-time review data to background
+        const reviewDataToSend = {
             reviewId: review.reviewId,
             customerName: review.customerName,
             extractedName: (classification.firstName && classification.confidence > 0.5) ? 
@@ -1645,23 +2848,26 @@ RESPOND WITH JSON ONLY - NO OTHER TEXT:
             confidence: classification.confidence || 0,
             selectedCategory: selectedCategory || 'Unknown',
             reply: finalReply,
-            replied: repliedStatus,
-            includeInAutoReply: true,
-            restaurantName: currentRestaurantName
+            replied: false,
+            restaurantName: window.AutoZomatoReviewManager.processingState.currentRestaurantName
         };
         
-        processedReviewsLog.push(reviewLogEntry);
-        
-        // Send real-time review data to background
         chrome.runtime.sendMessage({
             action: 'reviewProcessed',
-            reviewData: reviewLogEntry
+            reviewData: reviewDataToSend
         });
 
-        // Update log popup if open
-        if (document.getElementById('autozomato-log-popup')) {
-            renderLogPopupContent().catch(console.error);
-        }
+        // Return data for the main function to handle state management
+        return {
+            firstName: (classification.firstName && classification.confidence > 0.5) ? 
+                      classification.firstName : extractFirstName(review.customerName) || 'N/A',
+            sentiment: classification.sentiment || 'Unknown',
+            complaintId: classification.complaintId || 'None',
+            selectedCategory: selectedCategory || 'Unknown',
+            reply: finalReply,
+            confidence: classification.confidence || 0,
+            publishBtn: publishBtn
+        };
         
     } catch (error) {
         console.error('[AutoZomato] Error in Ollama mode processing:', error);
@@ -1677,267 +2883,17 @@ async function postReply(review, reply, config) {
         if (textarea && publishBtn) {
             textarea.value = reply;
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            
+            // Wait for the input event to process
+            await new Promise(resolve => setTimeout(resolve, 300));
+            
             publishBtn.click();
             console.log(`[AutoZomato] Posted reply for review ${review.reviewId}`);
+        } else {
+            console.warn(`[AutoZomato] Missing textarea or publish button for review ${review.reviewId}`);
         }
     } catch (error) {
         console.error('[AutoZomato] Error posting reply:', error);
-    }
-}
-
-// GPT Single-Prompt Review Processing - ANALYSIS ONLY, NO REPLY GENERATION
-async function processReviewWithGPT(review, config) {
-    // Load response bank to get complaint descriptions
-    let complaintDescriptions = '';
-    try {
-        const responseBankUrl = chrome.runtime.getURL('response_bank.json');
-        const response = await fetch(responseBankUrl);
-        const responseBank = await response.json();
-        
-        // Build complaint descriptions from response bank
-        if (responseBank.complaints && responseBank.complaints.length > 0) {
-            const complaintList = responseBank.complaints.map(complaint => 
-                `   - "${complaint.id}" = ${complaint.storyName}`
-            ).join('\n');
-            complaintDescriptions = complaintList;
-        } else {
-            // Fallback to hardcoded list if response bank fails
-            complaintDescriptions = `   - "1" = Incorrect Orders Received (wrong item delivered)
-   - "2" = Delivery Delays by Zomato (late delivery)
-   - "3" = Spill/Packaging Issues (food spilled, container broke)
-   - "4" = Cooking Instructions Not Followed (spice level, special requests ignored)
-   - "5" = Zomato Delivery-Related Issues (delivery person problems)
-   - "6" = Missing Cutlery (no spoon, fork, utensils)
-   - "7" = Rude Staff (restaurant staff behavior)
-   - "8" = Missing Item in Order (incomplete order)
-   - "9" = Food Safety – Foreign Materials (hair, plastic in food)`;
-        }
-    } catch (error) {
-        console.warn('[AutoZomato] Failed to load response bank for GPT prompt, using fallback:', error);
-        // Fallback to hardcoded list
-        complaintDescriptions = `   - "1" = Incorrect Orders Received (wrong item delivered)
-   - "2" = Delivery Delays by Zomato (late delivery)
-   - "3" = Spill/Packaging Issues (food spilled, container broke)
-   - "4" = Cooking Instructions Not Followed (spice level, special requests ignored)
-   - "5" = Zomato Delivery-Related Issues (delivery person problems)
-   - "6" = Missing Cutlery (no spoon, fork, utensils)
-   - "7" = Rude Staff (restaurant staff behavior)
-   - "8" = Missing Item in Order (incomplete order)
-   - "9" = Food Safety – Foreign Materials (hair, plastic in food)`;
-    }
-
-    const gptPrompt = `You are an AI assistant for a deliveries only restaurant review management system. Analyze this customer review and extract the following information in a single response.
-
-
-**RESTAURANT REVIEW ANALYSIS**
-
-Customer Name: "${review.customerName}"
-Review Text: "${review.reviewText}"
-Rating: ${review.rating}/5 stars
-
-**TASKS TO COMPLETE:**
-
-1. **EXTRACT FIRST NAME:**
-   - If the name is a clear real name (e.g., "Rahul Kumar"), extract the first part ("Rahul")
-   - If it's a username with an embedded name (e.g., "rahul123"), extract the name part ("Rahul") 
-   - If it's a valid standalone name (e.g., "Zak"), use that
-   - If the name is generic, nonsensical, or just initials (e.g., "FD", "User123", "FoodLover"), return null
-   - NEVER invent or guess a name - only extract what is clearly present
-
-2. **ANALYZE SENTIMENT:**
-   - Determine if the review is: Positive, Negative, or Neutral
-   - Base this on the overall tone and rating
-
-3. **DETECT SPECIFIC COMPLAINTS:**
-   - Only assign a complaint ID if the review EXPLICITLY mentions one of these specific issues:
-${complaintDescriptions}
-   - Return null if no specific complaint is detected
-   - Be MODERATE - general dissatisfaction like "food was bad" should NOT get a complaint ID
-   
-   
-
-**OUTPUT FORMAT:**
-Return ONLY a valid JSON object with these exact keys:
-{
-  "firstName": "string or null",
-  "sentiment": "Positive|Negative|Neutral", 
-  "complaintId": "string or null"
-}
-
-**EXAMPLES:**
-Customer: "john_foodie", Review: "Ordered chicken got mutton instead", Rating: 1
-→ {"firstName": "john", "sentiment": "Negative", "complaintId": "1"}
-
-Customer: "FoodLover123", Review: "Great taste and fast delivery!", Rating: 5  
-→ {"firstName": null, "sentiment": "Positive", "complaintId": null}
-
-Customer: "Sarah123", Review: "Food was cold and missing spoon", Rating: 2
-→ {"firstName": "Sarah", "sentiment": "Negative", "complaintId": "6"}
-
-Now analyze the review above and return the JSON response:`;
-
-    try {
-        const gptResult = await makeGPTRequest(gptPrompt, config.gptMode);
-        const parsedResult = cleanAndParseJSON(gptResult.response);
-        
-        console.log('[AutoZomato] GPT analysis result:', parsedResult);
-        
-        // Return only the analysis data - NO REPLY GENERATION
-        const result = {
-            firstName: parsedResult.firstName || null,
-            sentiment: parsedResult.sentiment || 'Neutral',
-            complaintId: parsedResult.complaintId || null
-        };
-        
-        return result;
-    } catch (error) {
-        console.error('[AutoZomato] GPT analysis failed:', error);
-        // Fallback to basic processing
-        return {
-            firstName: extractFirstNameFallback(review.customerName),
-            sentiment: 'Neutral',
-            complaintId: null
-        };
-    }
-}
-
-// Helper function for fallback name extraction
-function extractFirstNameFallback(customerName) {
-    if (!customerName || customerName.length < 2) return null;
-    
-    // Simple heuristics for name extraction
-    const name = customerName.trim();
-    
-    // If it looks like a real name (contains space)
-    if (name.includes(' ')) {
-        return name.split(' ')[0];
-    }
-    
-    // If it's a single word, check if it looks like a real name
-    if (name.length >= 3 && /^[A-Za-z]+$/.test(name) && 
-        !['user', 'customer', 'foodie', 'lover'].some(generic => 
-            name.toLowerCase().includes(generic))) {
-        return name;
-    }
-    
-    return null;
-}
-
-// AI Request Handler - supports both Ollama and GPT modes
-async function makeAIRequest(prompt, config) {
-    console.log('[AutoZomato] Making AI request with detailed config analysis:', {
-        configExists: !!config,
-        gptModeExists: !!config?.gptMode,
-        gptModeEnabled: config?.gptMode?.enabled,
-        hasApiKey: !!config?.gptMode?.apiKey,
-        apiKeyLength: config?.gptMode?.apiKey?.length || 0,
-        apiKeyValue: config?.gptMode?.apiKey ? `${config.gptMode.apiKey.substring(0, 10)}...` : 'null',
-        isPlaceholder: config?.gptMode?.apiKey === 'YOUR_OPENAI_API_KEY_HERE',
-        fullConfig: config
-    });
-    
-    // Check if GPT mode is enabled with valid API key
-    const hasValidApiKey = config?.gptMode?.apiKey && 
-                          config.gptMode.apiKey.trim() !== '' && 
-                          config.gptMode.apiKey !== 'YOUR_OPENAI_API_KEY_HERE' &&
-                          config.gptMode.apiKey.length > 10;
-    
-    if (config && config.gptMode && config.gptMode.enabled && hasValidApiKey) {
-        console.log('[AutoZomato] ✓ Using GPT mode:', config.gptMode.model);
-        return await makeGPTRequest(prompt, config.gptMode);
-    } else {
-        const failureReasons = [];
-        if (!config) failureReasons.push('no config');
-        if (!config?.gptMode) failureReasons.push('no GPT mode config');
-        if (!config?.gptMode?.enabled) failureReasons.push('GPT mode disabled');
-        if (!hasValidApiKey) failureReasons.push('invalid/missing API key');
-        
-        console.log('[AutoZomato] ✗ Using Ollama mode - GPT conditions failed:', failureReasons.join(', '));
-        console.log('[AutoZomato] → Additional debug info:', {
-            hasConfig: !!config,
-            hasGptMode: !!config?.gptMode,
-            isEnabled: config?.gptMode?.enabled,
-            hasApiKey: !!config?.gptMode?.apiKey,
-            hasValidApiKey: hasValidApiKey
-        });
-        return await makeOllamaRequest(prompt, config);
-    }
-}
-
-// GPT API Request
-async function makeGPTRequest(prompt, gptConfig) {
-    try {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${gptConfig.apiKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                model: gptConfig.model || 'gpt-4o-mini',
-                messages: [
-                    {
-                        role: 'user',
-                        content: prompt
-                    }
-                ],
-                max_tokens: 300, // Increased for longer replies
-                temperature: 0.7
-            })
-        });
-
-        if (!response.ok) {
-            throw new Error(`GPT API error: ${response.status} ${response.statusText}`);
-        }
-
-        const result = await response.json();
-        return {
-            response: result.choices[0].message.content.trim(),
-            success: true
-        };
-    } catch (error) {
-        console.error('[AutoZomato] GPT request failed:', error);
-        throw error;
-    }
-}
-
-// Ollama API Request (existing functionality)
-async function makeOllamaRequest(prompt, config) {
-    const model = (config && config.promptContext && config.promptContext.model) || 'tinyllama';
-    
-    const requestBody = {
-        model: model,
-        prompt: prompt,
-        stream: false,
-        format: 'json',  // Force JSON output
-        options: {
-            temperature: 0.1,  // Lower temperature for more consistent JSON
-            num_predict: 100,  // Use num_predict instead of max_tokens for Ollama
-            top_p: 0.9,
-            repeat_penalty: 1.1,
-            stop: ["\n\n", "```", "---", "EXAMPLES", "**", "Now analyze"]  // Better stop tokens
-        }
-    };
-
-    try {
-        const response = await fetch('http://localhost:3000/ollama/api/generate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(requestBody)
-        });
-
-        if (!response.ok) {
-            throw new Error(`Ollama API error: ${response.status} ${response.statusText}`);
-        }
-
-        const result = await response.json();
-        return {
-            response: result.response,
-            success: true
-        };
-    } catch (error) {
-        console.error('[AutoZomato] Ollama request failed:', error);
-        throw error;
     }
 }
 
@@ -1945,7 +2901,7 @@ async function makeOllamaRequest(prompt, config) {
 function detectPageType() {
     const url = window.location.href;
 
-    if (url.includes('/reviews') || document.querySelector('.res-review, [data-testid="review-card"]')) {
+    if (url.includes('/reviews') || document.querySelector('.res-review')) {
         return 'reviews';
     }
 
@@ -2127,7 +3083,12 @@ async function renderLogPopupContent() {
     `;
 
     const tbody = document.createElement('tbody');
-    if (processedReviewsLog.length === 0) {
+    
+    // Get processed reviews from ReviewManager instead of legacy processedReviewsLog
+    const reviewManager = window.AutoZomatoReviewManager;
+    const allReviews = Array.from(reviewManager.reviews.values());
+    
+    if (allReviews.length === 0) {
         const pageType = detectPageType();
         const isReviewsPage = pageType === 'reviews' || pageType === 'restaurant';
         const emptyMessage = isReviewsPage 
@@ -2136,41 +3097,41 @@ async function renderLogPopupContent() {
         
         tbody.innerHTML = `<tr><td colspan="7" style="padding: 20px; text-align: center; color: #888; line-height: 1.4;">${emptyMessage}</td></tr>`;
     } else {
-        processedReviewsLog.forEach(log => {
+        allReviews.forEach(review => {
             const row = document.createElement('tr');
-            row.setAttribute('data-review-id', log.reviewId);
+            row.setAttribute('data-review-id', review.reviewId);
 
-            const isEditable = !log.replied;
+            const isEditable = review.state !== reviewManager.ReviewState.PUBLISHED;
             const replyCellContent = isEditable
-                ? `<div class="editable-reply" contenteditable="true" style="padding: 4px; border-radius: 3px; border: 1px dashed #ccc; font-size: 11px;">${log.reply}</div>`
-                : `<div style="padding: 4px; font-size: 11px;">${log.reply}</div>`;
+                ? `<div class="editable-reply" contenteditable="true" style="padding: 4px; border-radius: 3px; border: 1px dashed #ccc; font-size: 11px;">${review.reply || ''}</div>`
+                : `<div style="padding: 4px; font-size: 11px;">${review.reply || ''}</div>`;
 
             // Create checkbox - disabled if already replied
-            const checkboxDisabled = log.replied ? 'disabled' : '';
-            const checkboxChecked = log.includeInAutoReply ? 'checked' : '';
+            const checkboxDisabled = review.state === reviewManager.ReviewState.PUBLISHED ? 'disabled' : '';
+            const checkboxChecked = review.includeInAutoReply ? 'checked' : '';
             
             // Sentiment color coding
-            const sentimentColor = log.sentiment === 'Positive' ? '#48bb78' : 
-                                 log.sentiment === 'Negative' ? '#e53e3e' : '#4299e1';
+            const sentimentColor = review.sentiment === 'Positive' ? '#48bb78' : 
+                                 review.sentiment === 'Negative' ? '#e53e3e' : '#4299e1';
             
             // Name confidence formatting
-            const nameConfidence = Math.round((log.confidence || 0) * 100);
+            const nameConfidence = Math.round((review.confidence || 0) * 100);
             const nameConfColor = nameConfidence > 70 ? '#48bb78' : 
                                  nameConfidence > 50 ? '#ed8936' : '#e53e3e';
 
             row.innerHTML = `
                 <td style="padding: 6px; border-bottom: 1px solid #eee; text-align: center; vertical-align: top;">
                     <input type="checkbox" class="include-checkbox" ${checkboxChecked} ${checkboxDisabled} 
-                           title="${log.replied ? 'Already replied' : 'Include in auto-reply'}" 
+                           title="${review.state === reviewManager.ReviewState.PUBLISHED ? 'Already replied' : 'Include in auto-reply'}" 
                            style="transform: scale(1.1);">
                 </td>
                 <td style="padding: 6px; border-bottom: 1px solid #eee; vertical-align: top; font-size: 11px;">
-                    <strong>${log.extractedName}</strong><br>
-                    <span style="color: #777; font-size: 10px;">${log.customerName}</span><br>
-                    <span style="color: #666; font-size: 10px;">${log.selectedCategory || 'Unknown'}</span>
+                    <strong>${review.extractedName || review.customerName}</strong><br>
+                    <span style="color: #777; font-size: 10px;">${review.customerName}</span><br>
+                    <span style="color: #666; font-size: 10px;">${review.selectedCategory || 'Unknown'}</span>
                 </td>
                 <td style="padding: 6px; border-bottom: 1px solid #eee; text-align: center; vertical-align: top;">
-                    <span style="color: ${sentimentColor}; font-weight: bold; font-size: 10px;">${log.sentiment || 'Unknown'}</span>
+                    <span style="color: ${sentimentColor}; font-weight: bold; font-size: 10px;">${review.sentiment || 'Unknown'}</span>
                 </td>
                 <td style="padding: 6px; border-bottom: 1px solid #eee; text-align: center; vertical-align: top;">
                     <span style="color: ${nameConfColor}; font-weight: bold; font-size: 10px;">${nameConfidence}%</span>
@@ -2181,14 +3142,14 @@ async function renderLogPopupContent() {
                 <td style="padding: 6px; border-bottom: 1px solid #eee; white-space: pre-wrap; word-break: break-word; vertical-align: top;">
                     ${replyCellContent}
                 </td>
-                <td class="reply-status" style="padding: 6px; border-bottom: 1px solid #eee; text-align: center; font-size: 14px; vertical-align: top;">${log.replied ? '✅' : '❌'}</td>
+                <td class="reply-status" style="padding: 6px; border-bottom: 1px solid #eee; text-align: center; font-size: 14px; vertical-align: top;">${review.state === reviewManager.ReviewState.PUBLISHED ? '✅' : '❌'}</td>
             `;
             tbody.appendChild(row);
             
             // Add complaint dropdown after row is added to DOM
             const complaintCell = row.querySelector('.complaint-cell');
             if (complaintCell) {
-                const dropdown = createComplaintSelector(log.complaintId, log.reviewId);
+                const dropdown = createComplaintSelector(review.complaintId, review.reviewId);
                 complaintCell.appendChild(dropdown);
             }
         });
@@ -2220,10 +3181,18 @@ function updateLogPopupHeader() {
     const selectAllBtn = popup.querySelector('.select-all-btn');
     if (!headerSpan || !replyAllBtn) return;
 
-    const totalReviews = processedReviewsLog.length;
-    const selectedForReply = processedReviewsLog.filter(log => !log.replied && log.includeInAutoReply).length;
-    const alreadyReplied = processedReviewsLog.filter(log => log.replied).length;
-    const unselectedReviews = processedReviewsLog.filter(log => !log.replied && !log.includeInAutoReply).length;
+    const reviewManager = window.AutoZomatoReviewManager;
+    const allReviews = Array.from(reviewManager.reviews.values());
+    const totalReviews = allReviews.length;
+    const alreadyReplied = allReviews.filter(review => review.state === reviewManager.ReviewState.PUBLISHED).length;
+    const selectedForReply = allReviews.filter(review => review.state !== reviewManager.ReviewState.PUBLISHED && review.includeInAutoReply).length;
+    const unselectedReviews = allReviews.filter(review => review.state !== reviewManager.ReviewState.PUBLISHED && !review.includeInAutoReply).length;
+
+    // Verify our counts add up correctly
+    const calculatedTotal = alreadyReplied + selectedForReply + unselectedReviews;
+    if (calculatedTotal !== totalReviews) {
+        console.warn(`[AutoZomato] Count mismatch: ${calculatedTotal} calculated vs ${totalReviews} actual`);
+    }
 
     headerSpan.innerHTML = `AutoZomato Reply Log (${totalReviews} reviews) - ${selectedForReply} selected for reply, ${alreadyReplied} already replied`;
     
@@ -2396,12 +3365,18 @@ async function handleReplyToAll() {
 
     console.log(`[AutoZomato] Found ${logsToReply.length} reviews to reply to.`);
 
-    for (const log of logsToReply) {
+    // Get the configured wait time (default to 3 seconds if not set)
+    const waitTimeMs = (window.autoZomatoConfig?.replyWaitTime || 3) * 1000;
+    console.log(`[AutoZomato] Using reply wait time: ${waitTimeMs}ms`);
+
+    for (let i = 0; i < logsToReply.length; i++) {
+        const log = logsToReply[i];
         const reviewElement = document.querySelector(`.res-review[data-review_id="${log.reviewId}"]`);
+        
         if (reviewElement) {
             const publishBtn = reviewElement.querySelector('.zblack');
             if (publishBtn) {
-                console.log(`[AutoZomato] Clicking publish for review ${log.reviewId}`);
+                console.log(`[AutoZomato] Clicking publish for review ${log.reviewId} (${i + 1}/${logsToReply.length})`);
                 publishBtn.click();
                 log.replied = true; // Update the log status
 
@@ -2429,7 +3404,11 @@ async function handleReplyToAll() {
                 // Update the header summary
                 updateLogPopupHeader();
 
-                await new Promise(resolve => setTimeout(resolve, 500)); // Wait 500ms between clicks
+                // Wait for the configured time before the next reply (except for the last one)
+                if (i < logsToReply.length - 1) {
+                    console.log(`[AutoZomato] Waiting ${waitTimeMs}ms before next reply...`);
+                    await new Promise(resolve => setTimeout(resolve, waitTimeMs));
+                }
             } else {
                 console.warn(`[AutoZomato] Could not find publish button for review ${log.reviewId} during Reply to All.`);
             }
@@ -2440,3 +3419,405 @@ async function handleReplyToAll() {
 
     console.log('[AutoZomato] Reply to All finished.');
 }
+
+// AUTO-REPLY QUEUE PROCESSOR - Processes queued reviews with configurable delays
+// UNIFIED AUTO-REPLY PROCESSOR - Uses ReviewManager for state management
+async function startAutoReplyProcessor() {
+    const reviewManager = window.AutoZomatoReviewManager;
+    
+    if (reviewManager.processingState.autoReplyRunning) {
+        console.log('[AutoZomato] Auto-reply processor already running');
+        return;
+    }
+    
+    reviewManager.processingState.autoReplyRunning = true;
+    reviewManager.processingState.autoReplyStopped = false;
+    
+    console.log('[AutoZomato] Starting unified auto-reply processor');
+    console.log(`[AutoZomato] Using wait time: ${reviewManager.processingState.autoReplyWaitTime}ms`);
+    
+    let processedCount = 0;
+    let iterationCount = 0;
+    const maxIterations = 50; // Prevent infinite loops
+    const processingStartTime = Date.now();
+    const maxProcessingTime = 10 * 60 * 1000; // 10 minutes max
+    
+    // Debug initial queue state
+    const initialQueue = reviewManager.getAutoReplyQueue();
+    console.log('[AutoZomato] Initial auto-reply queue state:', {
+        queueLength: initialQueue.length,
+        queueItems: initialQueue.map(r => ({
+            reviewId: r.reviewId,
+            hasReply: !!r.reply,
+            hasPublishBtn: !!r.publishBtn,
+            includeInAutoReply: r.includeInAutoReply,
+            state: r.state
+        }))
+    });
+    
+    // Also check all QUEUED reviews (not just those that pass getAutoReplyQueue filter)
+    const allQueuedReviews = reviewManager.getReviewsByState(reviewManager.ReviewState.QUEUED);
+    console.log('[AutoZomato] All QUEUED reviews (before filtering):', {
+        count: allQueuedReviews.length,
+        reviews: allQueuedReviews.map(r => ({
+            reviewId: r.reviewId,
+            includeInAutoReply: r.includeInAutoReply,
+            hasReply: !!r.reply,
+            hasPublishBtn: !!r.publishBtn,
+            publishBtnValid: r.publishBtn && document.contains(r.publishBtn)
+        }))
+    });
+    
+    while (!reviewManager.processingState.autoReplyStopped) {
+        iterationCount++;
+        const currentTime = Date.now();
+        
+        // Safety checks to prevent infinite loops
+        if (iterationCount > maxIterations) {
+            console.error(`[AutoZomato] Auto-reply processor exceeded maximum iterations (${maxIterations}). Stopping.`);
+            break;
+        }
+        
+        if (currentTime - processingStartTime > maxProcessingTime) {
+            console.error(`[AutoZomato] Auto-reply processor exceeded maximum processing time (${maxProcessingTime}ms). Stopping.`);
+            break;
+        }
+        
+        console.log(`[AutoZomato] Auto-reply processor iteration ${iterationCount}/${maxIterations}`);
+        
+        // Get reviews ready for auto-reply from ReviewManager
+        let queuedReviews = reviewManager.getAutoReplyQueue();
+        
+        // If no reviews in queue, check if we need to refresh publish buttons
+        if (queuedReviews.length === 0) {
+            console.log('[AutoZomato] No reviews in auto-reply queue. Checking for stale publish buttons...');
+            
+            // Check all QUEUED reviews and try to refresh their publish buttons
+            const allQueued = reviewManager.getReviewsByState(reviewManager.ReviewState.QUEUED);
+            let refreshedCount = 0;
+            
+            for (const review of allQueued) {
+                if (review.includeInAutoReply && review.reply && (!review.publishBtn || !document.contains(review.publishBtn))) {
+                    console.log(`[AutoZomato] Refreshing publish button for review ${review.reviewId}...`);
+                    
+                    // Try to find the review element and its publish button
+                    const reviewElement = document.querySelector(`.res-review[data-review_id="${review.reviewId}"]`);
+                    if (reviewElement) {
+                        const newPublishBtn = reviewElement.querySelector('.zblack');
+                        if (newPublishBtn) {
+                            reviewManager.updateReview(review.reviewId, {
+                                publishBtn: newPublishBtn
+                            });
+                            refreshedCount++;
+                            console.log(`[AutoZomato] ✅ Refreshed publish button for review ${review.reviewId}`);
+                        } else {
+                            console.log(`[AutoZomato] ❌ Could not find publish button for review ${review.reviewId}`);
+                        }
+                    } else {
+                        console.log(`[AutoZomato] ❌ Could not find review element for review ${review.reviewId}`);
+                    }
+                }
+            }
+            
+            if (refreshedCount > 0) {
+                console.log(`[AutoZomato] Refreshed ${refreshedCount} publish buttons. Rechecking queue...`);
+                queuedReviews = reviewManager.getAutoReplyQueue();
+            }
+        }
+        
+        if (queuedReviews.length === 0) {
+            console.log('[AutoZomato] No reviews in auto-reply queue after refresh. Processing complete.');
+            break;
+        }
+        
+        // Process the next review in queue
+        const reviewToProcess = queuedReviews[0];
+        
+        console.log(`[AutoZomato] Processing queued review ${reviewToProcess.reviewId} (${processedCount + 1}) - queue remaining: ${queuedReviews.length - 1}`);
+        console.log(`[AutoZomato] Remaining queue items: [${queuedReviews.slice(1).map(r => r.reviewId).join(', ')}]`);
+        
+        try {
+            // Update review state to PUBLISHING
+            reviewManager.updateReview(reviewToProcess.reviewId, {
+                state: reviewManager.ReviewState.PUBLISHING
+            });
+            
+            // Find the review element to verify it still exists
+            const reviewElement = document.querySelector(`.res-review[data-review_id="${reviewToProcess.reviewId}"]`);
+            
+            if (reviewElement) {
+                // Re-find the publish button to ensure it's still valid
+                let publishBtn = reviewToProcess.publishBtn;
+                
+                // If the original publish button is no longer valid, try to find it again
+                if (!publishBtn || !document.contains(publishBtn)) {
+                    console.log(`[AutoZomato] Original publish button for review ${reviewToProcess.reviewId} is stale, re-finding...`);
+                    publishBtn = reviewElement.querySelector('.zblack');
+                }
+                
+                if (publishBtn) {
+                    // Update the indicator to show current publishing status
+                    const remainingCount = queuedReviews.length - 1;
+                    const restaurantName = reviewManager.processingState.currentRestaurantName;
+                    
+                    // Get current counts for accurate display
+                    const processedReviews = reviewManager.getReviewsByState(reviewManager.ReviewState.PROCESSED);
+                    const publishedReviews = reviewManager.getReviewsByState(reviewManager.ReviewState.PUBLISHED);
+                    const totalProcessed = processedReviews.length + publishedReviews.length + 1; // +1 for the one being published
+                    
+                    createOrUpdateIndicator(`🚀 ${restaurantName} | Publishing reply ${totalProcessed} (${remainingCount} in queue)`, '#ffa500');
+                    
+                    // Click the publish button
+                    publishBtn.click();
+                    processedCount++;
+                    
+                    console.log(`[AutoZomato] ✅ Published reply for review ${reviewToProcess.reviewId}`);
+                    
+                    // Update review state to PUBLISHED
+                    reviewManager.updateReview(reviewToProcess.reviewId, {
+                        state: reviewManager.ReviewState.PUBLISHED
+                    });
+                    
+                    // Update the main processing counter
+                    reviewManager.processingState.processedCount = totalProcessed;
+                    
+                    // Log the review only after publishing
+                    processedReviewsLog.push({
+                        reviewId: reviewToProcess.reviewId,
+                        customerName: reviewToProcess.customerName,
+                        extractedName: reviewToProcess.extractedName,
+                        rating: reviewToProcess.rating,
+                        reviewText: reviewToProcess.reviewText,
+                        reply: reviewToProcess.reply,
+                        sentiment: reviewToProcess.sentiment,
+                        restaurantName: reviewManager.processingState.currentRestaurantName,
+                        replied: true,
+                        timestamp: new Date().toISOString()
+                    });
+
+                    // Send updated status to background script
+                    chrome.runtime.sendMessage({
+                        action: 'reviewProcessed',
+                        reviewData: {
+                            reviewId: reviewToProcess.reviewId,
+                            customerName: reviewToProcess.customerName,
+                            extractedName: reviewToProcess.extractedName,
+                            rating: reviewToProcess.rating,
+                            reviewText: reviewToProcess.reviewText,
+                            reply: reviewToProcess.reply,
+                            sentiment: reviewToProcess.sentiment,
+                            restaurantName: reviewManager.processingState.currentRestaurantName,
+                            replied: true,
+                            timestamp: new Date().toISOString()
+                        }
+                    });
+                    
+                    // Update any existing popup UI if present
+                    const row = document.querySelector(`#autozomato-log-popup tr[data-review-id="${reviewToProcess.reviewId}"]`);
+                    if (row) {
+                        const statusCell = row.querySelector('.reply-status');
+                        if (statusCell) {
+                            statusCell.innerHTML = '✅';
+                        }
+                        const replyDiv = row.querySelector('.editable-reply');
+                        if (replyDiv) {
+                            replyDiv.setAttribute('contenteditable', 'false');
+                            replyDiv.style.border = 'none';
+                            replyDiv.classList.remove('editable-reply');
+                        }
+                        const checkbox = row.querySelector('.include-checkbox');
+                        if (checkbox) {
+                            checkbox.disabled = true;
+                            checkbox.title = 'Already replied';
+                        }
+                    }
+                    
+                    // Update popup header if exists
+                    if (typeof updateLogPopupHeader === 'function') {
+                        updateLogPopupHeader();
+                    }
+                    
+                    // Send progress update to background script
+                    chrome.runtime.sendMessage({
+                        action: 'updateTabProgress',
+                        url: window.location.href,
+                        restaurantName: reviewManager.processingState.currentRestaurantName,
+                        progress: { current: processedCount, total: processedCount + queuedReviews.length - 1 },
+                        status: 'auto-publishing'
+                    });
+                } else {
+                    console.warn(`[AutoZomato] ❌ Could not find publish button for review ${reviewToProcess.reviewId}`);
+                    reviewManager.updateReview(reviewToProcess.reviewId, {
+                        state: reviewManager.ReviewState.FAILED,
+                        error: 'Publish button not found'
+                    });
+                }
+            } else {
+                console.warn(`[AutoZomato] ❌ Could not find review element for review ${reviewToProcess.reviewId}`);
+                reviewManager.updateReview(reviewToProcess.reviewId, {
+                    state: reviewManager.ReviewState.FAILED,
+                    error: 'Review element not found'
+                });
+            }
+            
+        } catch (error) {
+            console.error(`[AutoZomato] Error processing queued review ${reviewToProcess.reviewId}:`, error);
+            reviewManager.updateReview(reviewToProcess.reviewId, {
+                state: reviewManager.ReviewState.FAILED,
+                error: error.message || 'Processing failed'
+            });
+        }
+        
+        // Wait for the configured time before processing the next item
+        const remainingQueue = reviewManager.getAutoReplyQueue();
+        if (remainingQueue.length > 0) {
+            console.log(`[AutoZomato] Waiting ${reviewManager.processingState.autoReplyWaitTime}ms before processing next queued review...`);
+            await new Promise(resolve => setTimeout(resolve, reviewManager.processingState.autoReplyWaitTime));
+        }
+    }
+    
+    console.log(`[AutoZomato] Auto-reply processor finished. Processed ${processedCount} replies.`);
+    
+    // Get final accurate counts
+    const publishedReviews = reviewManager.getReviewsByState(reviewManager.ReviewState.PUBLISHED);
+    const processedReviews = reviewManager.getReviewsByState(reviewManager.ReviewState.PROCESSED);
+    const totalReplies = publishedReviews.length + processedReviews.length;
+    
+    // Update indicator to show completion with accurate counts
+    const restaurantName = reviewManager.processingState.currentRestaurantName;
+    createOrUpdateIndicator(`✅ ${restaurantName} | ${publishedReviews.length} Published, ${processedReviews.length} Ready`, '#48bb78');
+    
+    // Send completion update to background script
+    chrome.runtime.sendMessage({
+        action: 'updateTabProgress',
+        url: window.location.href,
+        restaurantName: restaurantName,
+        progress: { current: processedCount, total: processedCount },
+        status: 'auto-reply-completed'
+    });
+    
+    // Reset the processor state
+    reviewManager.processingState.autoReplyRunning = false;
+    
+    // Update the popup one final time now that auto-reply processing is complete
+    const popupElement = document.getElementById('autozomato-log-popup');
+    if (popupElement) {
+        renderLogPopupContent().catch(console.error);
+    }
+    
+    // Send completion signal now that auto-reply processing is complete
+    console.log('[AutoZomato] Auto-reply processor completed. Sending completion signal.');
+    console.log('[AutoZomato] Final processor state:', {
+        processedCount: processedCount,
+        queueLength: reviewManager.getAutoReplyQueue().length,
+        processorRunning: reviewManager.processingState.autoReplyRunning,
+        jobId: window.autoZomatoJobId,
+        stats: reviewManager.getStats()
+    });
+    sendProcessingCompletionSignal();
+}
+
+// Function to stop the auto-reply processor
+function stopAutoReplyProcessor() {
+    console.log('[AutoZomato] Stopping auto-reply processor');
+    const reviewManager = window.AutoZomatoReviewManager;
+    
+    reviewManager.processingState.autoReplyStopped = true;
+    
+    // Mark all queued reviews as skipped
+    const queuedReviews = reviewManager.getAutoReplyQueue();
+    queuedReviews.forEach(review => {
+        reviewManager.updateReview(review.reviewId, {
+            state: reviewManager.ReviewState.SKIPPED,
+            error: 'Auto-reply processor stopped'
+        });
+    });
+    
+    // Send completion signal if processing was stopped early
+    if (reviewManager.processingState.autoReplyRunning) {
+        console.log('[AutoZomato] Auto-reply processor stopped early. Sending completion signal.');
+        sendProcessingCompletionSignal();
+    }
+}
+
+// Function to get queue status - updated to use ReviewManager
+function getAutoReplyQueueStatus() {
+    const reviewManager = window.AutoZomatoReviewManager;
+    const queuedReviews = reviewManager.getAutoReplyQueue();
+    
+    return {
+        queueLength: queuedReviews.length,
+        isRunning: reviewManager.processingState.autoReplyRunning,
+        isStopped: reviewManager.processingState.autoReplyStopped
+    };
+}
+
+// Debug functions for console access - Updated to use ReviewManager
+window.autoZomatoDebug = {
+    getQueueStatus: getAutoReplyQueueStatus,
+    getQueue: () => {
+        const reviewManager = window.AutoZomatoReviewManager;
+        const queuedReviews = reviewManager.getAutoReplyQueue();
+        return queuedReviews.map(review => ({
+            reviewId: review.reviewId,
+            state: review.state,
+            hasReply: !!review.reply,
+            hasPublishBtn: !!review.publishBtn,
+            publishBtnValid: !!(review.publishBtn && document.contains(review.publishBtn))
+        }));
+    },
+    getProcessorState: () => {
+        const reviewManager = window.AutoZomatoReviewManager;
+        return {
+            running: reviewManager.processingState.autoReplyRunning,
+            stopped: reviewManager.processingState.autoReplyStopped,
+            processingRunning: reviewManager.processingState.processingRunning,
+            autoReplyEnabled: reviewManager.processingState.autoReplyEnabled
+        };
+    },
+    stopProcessor: stopAutoReplyProcessor,
+    clearQueue: () => {
+        const reviewManager = window.AutoZomatoReviewManager;
+        const queuedReviews = reviewManager.getAutoReplyQueue();
+        queuedReviews.forEach(review => {
+            reviewManager.updateReview(review.reviewId, {
+                state: reviewManager.ReviewState.PROCESSED,
+                includeInAutoReply: false
+            });
+        });
+        console.log('[AutoZomato] Queue cleared manually - reviews moved to PROCESSED state');
+    },
+    getProcessedLog: () => {
+        const reviewManager = window.AutoZomatoReviewManager;
+        return Array.from(reviewManager.reviews.values()).map(review => ({
+            reviewId: review.reviewId,
+            customerName: review.customerName,
+            state: review.state,
+            hasReply: !!review.reply
+        }));
+    },
+    getStats: () => {
+        const reviewManager = window.AutoZomatoReviewManager;
+        return reviewManager.getStats();
+    },
+    getReviewsByState: (state) => {
+        const reviewManager = window.AutoZomatoReviewManager;
+        return reviewManager.getReviewsByState(state);
+    },
+    validateQueue: () => {
+        const reviewManager = window.AutoZomatoReviewManager;
+        const queuedReviews = reviewManager.getAutoReplyQueue();
+        const validation = queuedReviews.map(review => {
+            const reviewElement = document.querySelector(`.res-review[data-review_id="${review.reviewId}"]`);
+            const publishBtn = reviewElement ? reviewElement.querySelector('.zblack') : null;
+            return {
+                reviewId: review.reviewId,
+                elementExists: !!reviewElement,
+                originalBtnValid: !!(review.publishBtn && document.contains(review.publishBtn)),
+                canRefindBtn: !!publishBtn
+            };
+        });
+        console.table(validation);
+        return validation;
+    }
+};

@@ -12,7 +12,7 @@ class PageController {
         this.selectedGroups = new Set();
         this.currentGroupId = null;
         this.restaurantNameMap = new Map();
-        this.restaurantProcessingMap = new Map(); // New: Track restaurant processing status to prevent duplicates
+        this.jobProcessingMap = new Map(); // New: Track job processing status by job ID (not URL)
         this.lastRunDate = null;
         
         // Initialize the new ReviewResultsTable component
@@ -32,15 +32,29 @@ class PageController {
             // Settings
             autoReplyToggle: document.getElementById('autoReplyToggle'),
             autoCloseToggle: document.getElementById('autoCloseToggle'),
-            gptModeToggle: document.getElementById('gptModeToggle'),
+            replyWaitTime: document.getElementById('replyWaitTime'),
             startDate: document.getElementById('startDate'),
             endDate: document.getElementById('endDate'),
+            
+            // Processing Mode Selection
+            ollamaMode: document.getElementById('ollamaMode'),
+            gptMode: document.getElementById('gptMode'),
+            offlineMode: document.getElementById('offlineMode'),
+            ollamaStatus: document.getElementById('ollamaStatus'),
+            gptStatus: document.getElementById('gptStatus'),
+            
+            // GPT Configuration
             gptConfigPanel: document.getElementById('gptConfigPanel'),
             gptKeyName: document.getElementById('gptKeyName'),
             gptApiKey: document.getElementById('gptApiKey'),
             gptModel: document.getElementById('gptModel'),
-            gptStatus: document.getElementById('gptStatus'),
             testGptConnection: document.getElementById('testGptConnection'),
+            
+            // Ollama Configuration
+            ollamaConfigPanel: document.getElementById('ollamaConfigPanel'),
+            ollamaUrl: document.getElementById('ollamaUrl'),
+            ollamaModel: document.getElementById('ollamaModel'),
+            testOllamaConnection: document.getElementById('testOllamaConnection'),
             
             // Groups Management
             groupsList: document.getElementById('groupsList'),
@@ -102,11 +116,23 @@ class PageController {
         // Settings
         this.elements.autoReplyToggle.addEventListener('change', () => this.saveSettings());
         this.elements.autoCloseToggle.addEventListener('change', () => this.saveSettings());
-        this.elements.gptModeToggle.addEventListener('change', () => this.handleGptModeToggle());
+        this.elements.replyWaitTime.addEventListener('input', () => this.saveSettings());
+        
+        // Processing Mode Selection
+        this.elements.ollamaMode.addEventListener('change', () => this.handleModeChange());
+        this.elements.gptMode.addEventListener('change', () => this.handleModeChange());
+        this.elements.offlineMode.addEventListener('change', () => this.handleModeChange());
+        
+        // GPT Configuration
         this.elements.gptKeyName.addEventListener('input', () => this.saveGptSettings());
         this.elements.gptApiKey.addEventListener('input', () => this.saveGptSettings());
         this.elements.gptModel.addEventListener('change', () => this.saveGptSettings());
         this.elements.testGptConnection.addEventListener('click', () => this.testGptConnection());
+        
+        // Ollama Configuration
+        this.elements.ollamaUrl.addEventListener('input', () => this.saveOllamaSettings());
+        this.elements.ollamaModel.addEventListener('change', () => this.saveOllamaSettings());
+        this.elements.testOllamaConnection.addEventListener('click', () => this.testOllamaConnection());
         
         // Date Range
         this.elements.startDate.addEventListener('change', () => this.saveDateSettings());
@@ -181,6 +207,12 @@ class PageController {
             console.error('[PageController] ReviewResultsTable component not initialized!');
         }
         
+        // ALSO add to the real-time results panel (for live updates)
+        if (this.addReviewToResultsPanel) {
+            this.addReviewToResultsPanel(reviewData);
+            console.log('[PageController] Review added to real-time results panel');
+        }
+        
         // Update overall statistics (keep this for other parts of the system)
         this.results.totalReviews++;
         if (reviewData.replied) {
@@ -204,6 +236,9 @@ class PageController {
                     break;
                 case 'updateProgress':
                     this.updateProgress(message.current, message.total);
+                    break;
+                case 'updateJobStatus':
+                    this.handleJobStatusUpdate(message);
                     break;
                 case 'updateTabStatus':
                     this.updateTabStatus(message.tabId, message.url, message.status, message.data);
@@ -241,7 +276,7 @@ class PageController {
         try {
             const result = await chrome.storage.local.get([
                 'groups', 'selectedGroups', 'selectedUrls', 'restaurantNameMap', 'lastRunDate',
-                'autoReplyEnabled', 'autoCloseEnabled', 'startDate', 'endDate'
+                'autoReplyEnabled', 'autoCloseEnabled', 'replyWaitTime', 'startDate', 'endDate'
             ]);
             
             this.groups = result.groups || [];
@@ -261,19 +296,35 @@ class PageController {
             // Load settings
             this.elements.autoReplyToggle.checked = result.autoReplyEnabled !== false; // Default to true
             this.elements.autoCloseToggle.checked = result.autoCloseEnabled === true; // Default to false
+            this.elements.replyWaitTime.value = result.replyWaitTime || 3; // Default to 3 seconds
             
             // Load date settings with defaults
             this.loadDateSettings(result.startDate, result.endDate);
             
-            // Load GPT settings
-            await this.loadGptSettings();
+            // Initialize processing mode selection
+            await this.initializeModeSelection();
             
             // Update settings display
             this.updateSettingsDisplay();
             
             this.render();
+            
+            // Get current processing state from background script
+            this.requestProcessingState();
         } catch (error) {
             console.error('Error loading state:', error);
+        }
+    }
+
+    async requestProcessingState() {
+        try {
+            const response = await chrome.runtime.sendMessage({ action: 'getProcessingState' });
+            if (response) {
+                console.log('[PageController] Got processing state from background:', response);
+                this.updateFullState(response);
+            }
+        } catch (error) {
+            console.error('Error requesting processing state:', error);
         }
     }
 
@@ -529,7 +580,18 @@ class PageController {
             console.log('[Dashboard] Setting to non-processing state (showing start, hiding stop)');
             this.elements.startProcessing.style.display = 'inline-flex';
             this.elements.stopProcessing.style.display = 'none';
-            this.elements.processingStatus.style.display = 'none';
+            
+            // Keep processingStatus visible if there are completed jobs to show
+            const hasCompletedJobs = this.jobProcessingMap && this.jobProcessingMap.size > 0;
+            if (hasCompletedJobs) {
+                console.log('[Dashboard] Keeping processingStatus visible due to completed jobs');
+                this.elements.processingStatus.style.display = 'block';
+                // Also ensure the processing table is rendered and visible
+                this.renderProcessingTable();
+            } else {
+                console.log('[Dashboard] Hiding processingStatus (no completed jobs)');
+                this.elements.processingStatus.style.display = 'none';
+            }
         }
         
         console.log('[Dashboard] Button states after update:', {
@@ -825,27 +887,14 @@ class PageController {
         
         // IMPORTANT: Initialize TWO SEPARATE TABLES with distinct purposes:
         
-        // 1. PROCESSING STATUS TABLE: Shows restaurant-level progress (how many reviews found/processed per restaurant)
+        // 1. PROCESSING STATUS TABLE: Shows job-level progress (how many reviews found/processed per job)
         this.initializeProcessingTable();
         
         // 2. INDIVIDUAL REVIEW RESULTS TABLE: Initialize the new component for individual reviews
         this.initializeReviewResultsComponent();
         
-        // Create initial placeholder entries for each URL in the restaurant processing map
-        selectedUrls.forEach((url, index) => {
-            const restaurantName = this.restaurantNameMap.get(url) || 'Loading restaurant name...';
-            this.restaurantProcessingMap.set(url, {
-                tabId: `temp-${index}`, // Temporary ID until real tab ID is available
-                url: url,
-                restaurantName: restaurantName,
-                status: 'starting',
-                isLiveUpdate: false,
-                progress: { current: 0, total: 0 },
-                reviewCount: 0,
-                repliesCount: 0,
-                timestamp: new Date().toISOString()
-            });
-        });
+        // Note: Job statuses will be populated by the background script via updateJobStatus messages
+        // No need to create placeholders here since each job will have its own unique ID
         
         // Render initial placeholder entries in processing table
         this.renderProcessingTable();
@@ -855,14 +904,32 @@ class PageController {
 
         // Send to background script with current settings
         try {
+            const selectedMode = this.getSelectedMode();
+            
+            // Get configuration for each mode
+            const [gptResult, ollamaResult] = await Promise.all([
+                chrome.storage.local.get(['gptApiKey', 'gptKeyName', 'gptModel']),
+                chrome.storage.local.get(['ollamaUrl', 'ollamaModel'])
+            ]);
+            
             const settings = {
                 autoReply: this.elements.autoReplyToggle.checked,
                 autoClose: this.elements.autoCloseToggle.checked,
+                replyWaitTime: parseInt(this.elements.replyWaitTime.value) || 3,
+                processingMode: selectedMode,
                 gptMode: {
-                    enabled: this.elements.gptModeToggle.checked,
-                    apiKey: this.elements.gptApiKey.value,
-                    keyName: this.elements.gptKeyName.value,
-                    model: this.elements.gptModel.value
+                    enabled: selectedMode === 'gpt',
+                    apiKey: gptResult.gptApiKey || '',
+                    keyName: gptResult.gptKeyName || 'AutoZomato GPT Key',
+                    model: gptResult.gptModel || 'gpt-4o-mini'
+                },
+                ollamaMode: {
+                    enabled: selectedMode === 'ollama',
+                    url: ollamaResult.ollamaUrl || 'http://localhost:11434',
+                    model: ollamaResult.ollamaModel || 'llama3:8b'
+                },
+                offlineMode: {
+                    enabled: selectedMode === 'offline'
                 },
                 dateRange: {
                     startDate: this.elements.startDate.value,
@@ -875,6 +942,15 @@ class PageController {
                 gptMode: { ...settings.gptMode, apiKey: '***masked***' } 
             });
             
+            // Check if selected mode is available
+            if (selectedMode === 'ollama' && !this.ollamaAvailable) {
+                throw new Error('Ollama is not available. Please check your Ollama installation or switch to GPT mode.');
+            }
+            
+            if (selectedMode === 'gpt' && !settings.gptMode.apiKey) {
+                throw new Error('GPT mode requires an API key. Please configure your OpenAI API key or switch to Ollama mode.');
+            }
+            
             this.updateStatus('Sending request to background script...', 'info');
             
             const response = await chrome.runtime.sendMessage({
@@ -882,7 +958,11 @@ class PageController {
                 urls: selectedUrls,
                 autoReply: settings.autoReply,
                 autoClose: settings.autoClose,
+                replyWaitTime: settings.replyWaitTime,
+                processingMode: settings.processingMode,
                 gptMode: settings.gptMode,
+                ollamaMode: settings.ollamaMode,
+                offlineMode: settings.offlineMode,
                 dateRange: settings.dateRange
             });
             console.log('Message sent to background, response:', response);
@@ -955,6 +1035,44 @@ class PageController {
             this.restaurantNameMap = new Map(data.restaurantNames);
         }
         
+        // NEW: Handle job statuses from background script
+        if (data.jobStatuses && Array.isArray(data.jobStatuses)) {
+            console.log('[Dashboard] Updating job statuses:', data.jobStatuses);
+            if (!this.jobProcessingMap) {
+                this.jobProcessingMap = new Map();
+            }
+            
+            // Ensure processing table exists before updating
+            if (!this.elements.processingTable && data.jobStatuses.length > 0) {
+                this.initializeProcessingTable(false); // Don't clear map when restoring state
+            }
+            
+            // Update job processing map with data from background
+            data.jobStatuses.forEach(job => {
+                if (job.jobId) {
+                    this.jobProcessingMap.set(job.jobId, {
+                        jobId: job.jobId,
+                        url: job.url,
+                        tabId: job.tabId,
+                        status: job.status,
+                        restaurantName: job.restaurantName || 'Loading...',
+                        progress: job.progress || { current: 0, total: 0 },
+                        reviewCount: job.data?.reviewCount || 0,
+                        repliesCount: job.data?.repliesCount || 0,
+                        startTime: job.startTime,
+                        endTime: job.endTime,
+                        error: job.error,
+                        completionRate: job.data?.completionRate || null,
+                        expectedReviews: job.data?.expectedReviews || null,
+                        lastUpdated: new Date().toISOString()
+                    });
+                }
+            });
+            
+            // Re-render the processing table
+            this.renderProcessingTable();
+        }
+        
         // Re-render to reflect updated state
         this.updateProcessingState();
         this.renderUrlsByGroup();
@@ -967,7 +1085,7 @@ class PageController {
         
         console.log('[Dashboard] Setting progress bar to:', percentage + '%');
         this.elements.progressFill.style.width = `${percentage}%`;
-        this.elements.statusText.textContent = `Processing ${current} of ${total} restaurants...`;
+        this.elements.statusText.textContent = `Processing ${current} of ${total} reviews...`;
     }
 
     updateTabStatus(tabId, url, status, data) {
@@ -1063,7 +1181,9 @@ class PageController {
                 }
                 
                 const percentage = progress.total > 0 ? (progress.current / progress.total * 100) : 0;
-                const statusIcon = status === 'completed' ? '✅' : status === 'processing' ? '🔄' : '⏳';
+                const statusIcon = status === 'completed' ? '✅' : 
+                                 status === 'partial' ? '🟡' : 
+                                 status === 'processing' ? '🔄' : '⏳';
                 
                 progressDiv.innerHTML = `
                     <div class="progress-bar">
@@ -1081,10 +1201,8 @@ class PageController {
         this.updateProcessingState();
         this.updateStatus('Processing complete');
         
-        // Hide processing table
-        if (this.elements.processingTable) {
-            this.elements.processingTable.style.display = 'none';
-        }
+        // Don't hide the processing table - let it show completed job statuses
+        // The table will be managed by renderProcessingTable() and updateProcessingState()
         
         // Extract all individual reviews from the results and show in Results section
         const allReviews = (results && results.tabs)
@@ -1476,6 +1594,13 @@ class PageController {
 
     updateExistingReviewRow(reviewId, reviewData) {
         console.log(`[AutoZomato] Attempting to update row for reviewId: ${reviewId}`);
+        console.log(`[AutoZomato] Review data for update:`, {
+            reviewId: reviewId,
+            customerName: reviewData.customerName,
+            replied: reviewData.replied,
+            hasReply: !!reviewData.reply,
+            timestamp: reviewData.timestamp
+        });
         
         // Check if table body element exists
         if (!this.elements.realTimeResultsTableBody) {
@@ -1505,9 +1630,12 @@ class PageController {
         const sentiment = reviewData.sentiment || 'Neutral';
         const sentimentClass = typeof sentiment === 'string' ? sentiment.toLowerCase() : 'neutral';
         
+        // STATUS UPDATE: This is the key part - ensure replied status is reflected
         const statusBadge = reviewData.replied ? 
             `<span class="status-badge status-completed">Completed</span>` :
             `<span class="status-badge status-processing">Processing</span>`;
+        
+        console.log(`[AutoZomato] Status badge for ${reviewId}: ${statusBadge} (replied: ${reviewData.replied})`);
         
         const rating = reviewData.rating ? 
             `<span class="rating-stars">${'★'.repeat(Math.floor(reviewData.rating))}${'☆'.repeat(5 - Math.floor(reviewData.rating))}</span> (${reviewData.rating})` :
@@ -1732,7 +1860,8 @@ class PageController {
                 restaurantNameMap: Array.from(this.restaurantNameMap.entries()),
                 lastRunDate: this.lastRunDate,
                 autoReplyEnabled: this.elements.autoReplyToggle.checked,
-                autoCloseEnabled: this.elements.autoCloseToggle.checked
+                autoCloseEnabled: this.elements.autoCloseToggle.checked,
+                replyWaitTime: parseInt(this.elements.replyWaitTime.value) || 3
             });
         } catch (error) {
             console.error('Error saving data:', error);
@@ -1743,15 +1872,22 @@ class PageController {
         try {
             await chrome.storage.local.set({
                 autoReplyEnabled: this.elements.autoReplyToggle.checked,
-                autoCloseEnabled: this.elements.autoCloseToggle.checked
+                autoCloseEnabled: this.elements.autoCloseToggle.checked,
+                replyWaitTime: parseInt(this.elements.replyWaitTime.value) || 3,
+                processingMode: this.getSelectedMode()
             });
             
             // Update the display
             this.updateSettingsDisplay();
             
+            // Update content scripts with new configuration
+            await this.updateActiveContentScripts();
+            
             console.log('Settings saved:', {
                 autoReply: this.elements.autoReplyToggle.checked,
-                autoClose: this.elements.autoCloseToggle.checked
+                autoClose: this.elements.autoCloseToggle.checked,
+                replyWaitTime: parseInt(this.elements.replyWaitTime.value) || 3,
+                processingMode: this.getSelectedMode()
             });
         } catch (error) {
             console.error('Error saving settings:', error);
@@ -1818,35 +1954,206 @@ class PageController {
         }
     }
 
-    // GPT Mode Methods
-    handleGptModeToggle() {
-        const isEnabled = this.elements.gptModeToggle.checked;
+    // Processing Mode Methods
+    async handleModeChange() {
+        const selectedMode = this.getSelectedMode();
+        console.log('[PageController] Mode changed to:', selectedMode);
         
-        if (isEnabled) {
-            this.elements.gptConfigPanel.style.display = 'block';
-            this.loadGptSettings();
-        } else {
-            this.elements.gptConfigPanel.style.display = 'none';
+        // Hide all config panels first
+        this.elements.gptConfigPanel.style.display = 'none';
+        this.elements.ollamaConfigPanel.style.display = 'none';
+        
+        // Show appropriate config panel
+        switch (selectedMode) {
+            case 'ollama':
+                this.elements.ollamaConfigPanel.style.display = 'block';
+                await this.loadOllamaSettings();
+                break;
+            case 'gpt':
+                this.elements.gptConfigPanel.style.display = 'block';
+                await this.loadGptSettings();
+                break;
+            case 'offline':
+                // No config panel for offline mode
+                break;
         }
         
-        this.saveGptSettings();
+        // Save the selected mode
+        await this.saveModeSettings();
+        
+        // Update all active content scripts with new configuration
+        await this.updateActiveContentScripts();
+    }
+
+    getSelectedMode() {
+        if (this.elements.ollamaMode.checked) return 'ollama';
+        if (this.elements.gptMode.checked) return 'gpt';
+        if (this.elements.offlineMode.checked) return 'offline';
+        return 'ollama'; // default
+    }
+
+    async initializeModeSelection() {
+        console.log('[PageController] Initializing mode selection...');
+        
+        // Load saved mode or default to ollama
+        const result = await chrome.storage.local.get(['processingMode']);
+        const savedMode = result.processingMode || 'ollama';
+        
+        // Set the appropriate radio button
+        switch (savedMode) {
+            case 'ollama':
+                this.elements.ollamaMode.checked = true;
+                break;
+            case 'gpt':
+                this.elements.gptMode.checked = true;
+                break;
+            case 'offline':
+                this.elements.offlineMode.checked = true;
+                break;
+        }
+        
+        // Check Ollama availability
+        await this.checkOllamaAvailability();
+        
+        // If Ollama is not available and we're in ollama mode, auto-switch to GPT
+        if (savedMode === 'ollama' && !this.ollamaAvailable) {
+            console.log('[PageController] Ollama unavailable, auto-switching to GPT mode');
+            this.elements.gptMode.checked = true;
+            await this.saveModeSettings();
+        }
+        
+        // Handle initial mode setup
+        await this.handleModeChange();
+    }
+
+    async checkOllamaAvailability() {
+        try {
+            const result = await chrome.storage.local.get(['ollamaUrl']);
+            const ollamaUrl = result.ollamaUrl || 'http://localhost:11434';
+            
+            this.elements.ollamaStatus.textContent = 'Checking...';
+            this.elements.ollamaStatus.className = 'mode-status checking';
+            
+            const response = await fetch(`${ollamaUrl}/api/tags`, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (response.ok) {
+                this.ollamaAvailable = true;
+                this.elements.ollamaStatus.textContent = 'Available';
+                this.elements.ollamaStatus.className = 'mode-status available';
+                console.log('[PageController] Ollama is available');
+            } else {
+                throw new Error(`HTTP ${response.status}`);
+            }
+        } catch (error) {
+            this.ollamaAvailable = false;
+            this.elements.ollamaStatus.textContent = 'Unavailable';
+            this.elements.ollamaStatus.className = 'mode-status unavailable';
+            console.log('[PageController] Ollama is unavailable:', error.message);
+        }
+    }
+
+    async saveModeSettings() {
+        try {
+            const selectedMode = this.getSelectedMode();
+            await chrome.storage.local.set({
+                processingMode: selectedMode
+            });
+            console.log('[PageController] Mode saved:', selectedMode);
+        } catch (error) {
+            console.error('Error saving mode settings:', error);
+        }
+    }
+
+    // Ollama Configuration Methods
+    async loadOllamaSettings() {
+        try {
+            const result = await chrome.storage.local.get([
+                'ollamaUrl', 'ollamaModel'
+            ]);
+            
+            this.elements.ollamaUrl.value = result.ollamaUrl || 'http://localhost:11434';
+            this.elements.ollamaModel.value = result.ollamaModel || 'llama3:8b';
+            
+            console.log('[PageController] Ollama settings loaded');
+        } catch (error) {
+            console.error('Error loading Ollama settings:', error);
+        }
+    }
+
+    async saveOllamaSettings() {
+        try {
+            const settings = {
+                ollamaUrl: this.elements.ollamaUrl.value,
+                ollamaModel: this.elements.ollamaModel.value
+            };
+            
+            await chrome.storage.local.set(settings);
+            console.log('[PageController] Ollama settings saved');
+            
+            // Re-check availability after URL change
+            await this.checkOllamaAvailability();
+            
+            // Update all active content scripts
+            await this.updateActiveContentScripts();
+        } catch (error) {
+            console.error('Error saving Ollama settings:', error);
+        }
+    }
+
+    async testOllamaConnection() {
+        if (!this.elements.ollamaUrl.value.trim()) {
+            this.elements.ollamaStatus.textContent = 'No URL provided';
+            this.elements.ollamaStatus.className = 'mode-status not-configured';
+            return;
+        }
+
+        // Disable button during test
+        this.elements.testOllamaConnection.disabled = true;
+        this.elements.testOllamaConnection.textContent = 'Testing...';
+        this.elements.ollamaStatus.textContent = 'Testing connection...';
+        this.elements.ollamaStatus.className = 'mode-status checking';
+
+        try {
+            const response = await fetch(`${this.elements.ollamaUrl.value}/api/tags`, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                this.elements.ollamaStatus.textContent = `✅ Connected (${result.models?.length || 0} models)`;
+                this.elements.ollamaStatus.className = 'mode-status configured';
+                console.log('[PageController] Ollama test successful:', result.models?.length || 0, 'models available');
+            } else {
+                throw new Error(`HTTP ${response.status}`);
+            }
+        } catch (error) {
+            console.error('[PageController] Ollama connection test failed:', error);
+            this.elements.ollamaStatus.textContent = '❌ Connection failed';
+            this.elements.ollamaStatus.className = 'mode-status unavailable';
+        } finally {
+            // Re-enable button
+            this.elements.testOllamaConnection.disabled = false;
+            this.elements.testOllamaConnection.textContent = 'Test Connection';
+        }
     }
 
     async loadGptSettings() {
         try {
             const result = await chrome.storage.local.get([
-                'gptModeEnabled', 'gptApiKey', 'gptKeyName', 'gptModel'
+                'gptApiKey', 'gptKeyName', 'gptModel'
             ]);
             
-            this.elements.gptModeToggle.checked = result.gptModeEnabled || false;
             this.elements.gptApiKey.value = result.gptApiKey || '';
             this.elements.gptKeyName.value = result.gptKeyName || 'AutoZomato GPT Key';
             this.elements.gptModel.value = result.gptModel || 'gpt-4o-mini';
-            
-            // Show/hide config panel based on toggle state
-            if (this.elements.gptModeToggle.checked) {
-                this.elements.gptConfigPanel.style.display = 'block';
-            }
             
             this.updateGptStatus();
         } catch (error) {
@@ -1857,7 +2164,6 @@ class PageController {
     async saveGptSettings() {
         try {
             const settings = {
-                gptModeEnabled: this.elements.gptModeToggle.checked,
                 gptApiKey: this.elements.gptApiKey.value,
                 gptKeyName: this.elements.gptKeyName.value,
                 gptModel: this.elements.gptModel.value
@@ -1869,26 +2175,44 @@ class PageController {
             console.log('GPT settings saved:', { ...settings, gptApiKey: '***masked***' });
             
             // Update all active content scripts with new GPT configuration
-            await this.updateActiveContentScripts(settings);
+            await this.updateActiveContentScripts();
             
         } catch (error) {
             console.error('Error saving GPT settings:', error);
         }
     }
 
-    async updateActiveContentScripts(gptSettings) {
+    async updateActiveContentScripts() {
         try {
-            console.log('[Page] Updating all active content scripts with new GPT configuration...');
+            console.log('[Page] Updating all active content scripts with new configuration...');
+            
+            const selectedMode = this.getSelectedMode();
+            
+            // Get all configuration settings
+            const [gptResult, ollamaResult] = await Promise.all([
+                chrome.storage.local.get(['gptApiKey', 'gptKeyName', 'gptModel']),
+                chrome.storage.local.get(['ollamaUrl', 'ollamaModel'])
+            ]);
             
             // Build the complete configuration object that content scripts expect
             const fullConfig = {
                 autoReply: this.elements.autoReplyToggle.checked,
                 autoClose: this.elements.autoCloseToggle.checked,
+                replyWaitTime: parseInt(this.elements.replyWaitTime.value) || 3,
+                processingMode: selectedMode,
                 gptMode: {
-                    enabled: gptSettings.gptModeEnabled,
-                    apiKey: gptSettings.gptApiKey,
-                    keyName: gptSettings.gptKeyName,
-                    model: gptSettings.gptModel
+                    enabled: selectedMode === 'gpt',
+                    apiKey: gptResult.gptApiKey || '',
+                    keyName: gptResult.gptKeyName || 'AutoZomato GPT Key',
+                    model: gptResult.gptModel || 'gpt-4o-mini'
+                },
+                ollamaMode: {
+                    enabled: selectedMode === 'ollama',
+                    url: ollamaResult.ollamaUrl || 'http://localhost:11434',
+                    model: ollamaResult.ollamaModel || 'llama3:8b'
+                },
+                offlineMode: {
+                    enabled: selectedMode === 'offline'
                 },
                 promptContext: {}  // This would be loaded from settings.json by background script
             };
@@ -1897,17 +2221,12 @@ class PageController {
             const tabs = await chrome.tabs.query({});
             const updatePromises = tabs.map(async (tab) => {
                 try {
-                    if (tab.url && (tab.url.includes('zomato.com') || tab.url.includes('file://'))) {
-                        console.log(`[Page] Updating config for tab ${tab.id}: ${tab.url}`);
-                        await chrome.tabs.sendMessage(tab.id, {
-                            action: 'updateConfiguration',
-                            config: fullConfig
-                        });
-                        console.log(`[Page] ✓ Updated tab ${tab.id} successfully`);
-                    }
+                    await chrome.tabs.sendMessage(tab.id, {
+                        action: 'updateConfiguration',
+                        config: fullConfig
+                    });
                 } catch (tabError) {
-                    console.log(`[Page] Could not update tab ${tab.id}:`, tabError.message);
-                    // Tab might not have content script loaded, ignore error
+                    // Ignore errors for tabs without content scripts
                 }
             });
             
@@ -1920,18 +2239,18 @@ class PageController {
     }
 
     updateGptStatus() {
-        const isEnabled = this.elements.gptModeToggle.checked;
+        const selectedMode = this.getSelectedMode();
         const hasApiKey = this.elements.gptApiKey.value.trim().length > 0;
         
-        if (!isEnabled) {
-            this.elements.gptStatus.textContent = 'GPT Mode disabled';
-            this.elements.gptStatus.className = 'gpt-status not-configured';
+        if (selectedMode !== 'gpt') {
+            this.elements.gptStatus.textContent = 'Not selected';
+            this.elements.gptStatus.className = 'mode-status';
         } else if (hasApiKey) {
             this.elements.gptStatus.textContent = `Configured: ${this.elements.gptModel.value}`;
-            this.elements.gptStatus.className = 'gpt-status configured';
+            this.elements.gptStatus.className = 'mode-status configured';
         } else {
             this.elements.gptStatus.textContent = 'API Key required';
-            this.elements.gptStatus.className = 'gpt-status not-configured';
+            this.elements.gptStatus.className = 'mode-status not-configured';
         }
     }
 
@@ -2243,80 +2562,129 @@ class PageController {
     }
 
     // Processing table methods (for Processing Control section)
-    initializeProcessingTable() {
-        // RESTAURANT STATUS TABLE: Shows progress for each restaurant being processed
-        // This table shows: Restaurant name, URL, Status, Progress bar, Total reviews found, Total replies generated
-        const processingSectionHtml = `
-            <div id="processingTable" class="processing-table-container">
-                <div class="processing-header">
-                    <h4>Restaurant Processing Status</h4>
+    initializeProcessingTable(clearMap = true) {
+        // JOB STATUS TABLE: Shows progress for each job being processed
+        // This table shows: Job ID, Restaurant name, URL, Status, Progress bar, Total reviews found, Total replies generated
+        
+        // Only create HTML if it doesn't exist
+        if (!this.elements.processingTable) {
+            const processingSectionHtml = `
+                <div id="processingTable" class="processing-table-container">
+                    <div class="processing-header">
+                        <h4>Job Processing Status</h4>
+                    </div>
+                    <table class="processing-table">
+                        <thead>
+                            <tr>
+                                <th>Job ID</th>
+                                <th>Restaurant</th>
+                                <th>URL</th>
+                                <th>Status</th>
+                                <th>Progress</th>
+                                <th>Reviews Found</th>
+                                <th>Replies Generated</th>
+                            </tr>
+                        </thead>
+                        <tbody id="processingTableBody">
+                            <!-- Processing entries will be populated here -->
+                        </tbody>
+                    </table>
                 </div>
-                <table class="processing-table">
-                    <thead>
-                        <tr>
-                            <th>Restaurant</th>
-                            <th>URL</th>
-                            <th>Status</th>
-                            <th>Progress</th>
-                            <th>Reviews Found</th>
-                            <th>Replies Generated</th>
-                        </tr>
-                    </thead>
-                    <tbody id="processingTableBody">
-                        <!-- Processing entries will be populated here -->
-                    </tbody>
-                </table>
-            </div>
-        `;
-        
-        // Initialize restaurant tracking map to prevent duplicates
-        this.restaurantProcessingMap = new Map(); // URL -> processing data
-        
-        // Insert after the processing status element
-        if (this.elements.processingStatus) {
-            this.elements.processingStatus.insertAdjacentHTML('afterend', processingSectionHtml);
-            this.elements.processingTable = document.getElementById('processingTable');
-            this.elements.processingTableBody = document.getElementById('processingTableBody');
+            `;
             
-            // Show the processing table
-            this.elements.processingTable.style.display = 'block';
-            
-            console.log('[PageController] Processing table initialized with deduplication map');
+            // Insert after the processing status element
+            if (this.elements.processingStatus) {
+                this.elements.processingStatus.insertAdjacentHTML('afterend', processingSectionHtml);
+                this.elements.processingTable = document.getElementById('processingTable');
+                this.elements.processingTableBody = document.getElementById('processingTableBody');
+            }
         }
+        
+        // Initialize/clear job tracking map for new processing session (only if requested)
+        if (clearMap) {
+            this.jobProcessingMap = new Map(); // jobId -> processing data
+        }
+        
+        // Show the processing table
+        if (this.elements.processingTable) {
+            this.elements.processingTable.style.display = 'block';
+        }
+        
+        console.log('[PageController] Job processing table initialized with job ID tracking');
     }
 
     renderProcessingTable() {
-        // RESTAURANT STATUS TABLE: Updates restaurant-level progress, NOT individual reviews
-        // This method populates the processing status table with restaurant progress information
+        // JOB STATUS TABLE: Updates job-level progress, using job ID as primary key
+        // This method populates the processing status table with job progress information
+        console.log('[PageController] renderProcessingTable called:', {
+            hasTableBody: !!this.elements.processingTableBody,
+            hasMap: !!this.jobProcessingMap,
+            mapSize: this.jobProcessingMap ? this.jobProcessingMap.size : 0,
+            hasLastRunDate: !!this.lastRunDate,
+            isProcessing: this.isProcessing
+        });
+        
         if (!this.elements.processingTableBody) return;
         
-        if (!this.restaurantProcessingMap || this.restaurantProcessingMap.size === 0) {
-            this.elements.processingTable.style.display = 'none';
-            return;
+        // Only hide the table if map is empty AND processing hasn't started yet
+        // Keep table visible when processing is complete to show final results
+        if (!this.jobProcessingMap || this.jobProcessingMap.size === 0) {
+            if (!this.lastRunDate) {
+                // No previous run, hide table
+                console.log('[PageController] Hiding table - no previous run');
+                this.elements.processingTable.style.display = 'none';
+                return;
+            } else {
+                // Previous run exists, show empty table with message
+                console.log('[PageController] Showing empty table with message - previous run exists');
+                this.elements.processingTable.style.display = 'block';
+                this.elements.processingTableBody.innerHTML = `
+                    <tr>
+                        <td colspan="7" style="text-align: center; padding: 20px; color: #666;">
+                            No active jobs. Click "Start Processing" to begin.
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
         }
         
+        console.log('[PageController] Showing table with', this.jobProcessingMap.size, 'jobs');
         this.elements.processingTable.style.display = 'block';
         
-        // Convert map to array for rendering, ensuring no duplicates
-        const processingEntries = Array.from(this.restaurantProcessingMap.values());
+        // Convert map to array for rendering, using job ID as unique identifier
+        const processingEntries = Array.from(this.jobProcessingMap.values());
         
-        this.elements.processingTableBody.innerHTML = processingEntries.map(result => {
-            const statusIcon = result.status === 'completed' ? '✅' : 
-                             result.status === 'processing' ? '🔄' : 
-                             result.status === 'starting' ? '⏳' : 
-                             result.status === 'error' ? '❌' : '⏳';
-            const progress = result.progress && result.progress.total > 0 ? 
-                `${result.progress.current}/${result.progress.total}` : '0/0';
-            const percentage = result.progress && result.progress.total > 0 ? 
-                Math.round((result.progress.current / result.progress.total) * 100) : 0;
+        this.elements.processingTableBody.innerHTML = processingEntries.map(job => {
+            const statusIcon = job.status === 'completed' ? '✅' : 
+                             job.status === 'partial' ? '🟡' : 
+                             job.status === 'processing' ? '🔄' : 
+                             job.status === 'auto-publishing' ? '🚀' : 
+                             job.status === 'auto-reply-completed' ? '✅' : 
+                             job.status === 'loading' ? '⏳' : 
+                             job.status === 'queued' ? '⏸️' : 
+                             job.status === 'error' ? '❌' : 
+                             job.status === 'cancelled' ? '🚫' : '⏳';
+            
+            const progress = job.progress && job.progress.total > 0 ? 
+                `${job.progress.current}/${job.progress.total}` : '0/0';
+            const percentage = job.progress && job.progress.total > 0 ? 
+                Math.round((job.progress.current / job.progress.total) * 100) : 0;
+            
+            // Truncate URL for display
+            const displayUrl = job.url.length > 50 ? job.url.substring(0, 50) + '...' : job.url;
             
             return `
-                <tr class="processing-row ${result.status}" data-url="${result.url}">
-                    <td>${result.restaurantName || 'Loading...'}</td>
-                    <td><a href="${result.url}" target="_blank" class="url-link">${new URL(result.url).hostname}</a></td>
+                <tr class="processing-row ${job.status}" data-job-id="${job.jobId}">
                     <td>
-                        <span class="status-badge status-${result.status}">
-                            ${statusIcon} ${result.status}
+                        <span class="job-id-badge">${job.jobId}</span>
+                    </td>
+                    <td>${job.restaurantName || 'Loading...'}</td>
+                    <td><a href="${job.url}" target="_blank" class="url-link" title="${job.url}">${displayUrl}</a></td>
+                    <td>
+                        <span class="status-badge status-${job.status}">
+                            ${statusIcon} ${job.status.replace(/-/g, ' ')}
+                            ${job.status === 'partial' && job.completionRate ? ` (${job.completionRate}%)` : ''}
                         </span>
                     </td>
                     <td>
@@ -2327,13 +2695,68 @@ class PageController {
                             <span class="progress-text">${progress} (${percentage}%)</span>
                         </div>
                     </td>
-                    <td>${result.reviewCount || 0}</td>
-                    <td>${result.repliesCount || 0}</td>
+                    <td>
+                        ${job.reviewCount || 0}
+                        ${job.status === 'partial' && job.expectedReviews ? `/${job.expectedReviews}` : ''}
+                    </td>
+                    <td>${job.repliesCount || 0}</td>
                 </tr>
             `;
         }).join('');
         
-        console.log(`[PageController] Rendered processing table with ${processingEntries.length} unique restaurants`);
+        console.log(`[PageController] Rendered job processing table with ${processingEntries.length} jobs`);
+    }
+
+    // NEW: Handle job status updates from background script
+    handleJobStatusUpdate(message) {
+        console.log('[PageController] Handling job status update:', message);
+        
+        if (!message.jobId) {
+            console.warn('[PageController] Job status update missing jobId:', message);
+            return;
+        }
+        
+        // Initialize job processing map if not exists
+        if (!this.jobProcessingMap) {
+            this.jobProcessingMap = new Map();
+        }
+        
+        // Extract review count and expected reviews data
+        const reviewCount = message.reviewCount || message.data?.reviewCount || 0;
+        const expectedReviews = message.expectedReviews || message.data?.expectedReviews || null;
+        
+        // Use the status determined by the background script
+        // The background script now handles all completion status logic
+        const finalStatus = message.status;
+        const completionRate = message.completionRate || message.data?.completionRate || null;
+        
+        console.log(`[PageController] Job ${message.jobId} status update: ${finalStatus} (${reviewCount}/${expectedReviews} reviews)`);
+        
+        // Update job status in our tracking map
+        const jobData = {
+            jobId: message.jobId,
+            url: message.url,
+            tabId: message.tabId,
+            status: finalStatus,
+            restaurantName: message.restaurantName || 'Loading...',
+            progress: message.progress || { current: 0, total: 0 },
+            reviewCount: reviewCount,
+            repliesCount: message.repliesCount || message.data?.repliesCount || 0,
+            startTime: message.startTime,
+            endTime: message.endTime,
+            error: message.error,
+            completionRate: completionRate,
+            expectedReviews: expectedReviews,
+            lastUpdated: new Date().toISOString()
+        };
+        
+        // Store using job ID as the key
+        this.jobProcessingMap.set(message.jobId, jobData);
+        
+        // Re-render the table to show the update
+        this.renderProcessingTable();
+        
+        console.log(`[PageController] Updated job ${message.jobId} status to ${finalStatus}`);
     }
 
     initializeReviewsTable() {
@@ -2400,86 +2823,21 @@ class PageController {
         }
     }
 
-    updateRealtimeProgressDisplay(tabId, url, restaurantName, progress, status) {
-        console.log('[Dashboard] Updating real-time progress display:', { tabId, url, restaurantName, progress, status });
-        if (!this.restaurantProcessingMap) {
-            this.restaurantProcessingMap = new Map();
-        }
-        const urlKey = this.normalizeUrl(url);
-        const existingData = this.restaurantProcessingMap.get(urlKey) || {};
-        const updatedData = {
-            ...existingData,
-            tabId,
-            url: urlKey,
-            restaurantName: restaurantName || existingData.restaurantName || 'Loading...',
-            status,
-            progress: progress || existingData.progress || { current: 0, total: 0 },
-            isLiveUpdate: true,
-            reviewCount: progress?.total || existingData.reviewCount || 0,
-            repliesCount: progress?.current || existingData.repliesCount || 0,
-            timestamp: existingData.timestamp || new Date().toISOString(),
-            lastUpdated: new Date().toISOString()
-        };
-        this.restaurantProcessingMap.set(urlKey, updatedData);
-        this.renderProcessingTable();
-    }
-
-    // Mark a restaurant as completed in the processing table
-    markRestaurantCompleted(url, restaurantName, finalStats) {
-        if (!this.restaurantProcessingMap) {
-            this.restaurantProcessingMap = new Map();
-        }
-        const urlKey = this.normalizeUrl(url);
-        const existingData = this.restaurantProcessingMap.get(urlKey) || {};
-        const completedData = {
-            ...existingData,
-            url: urlKey,
-            restaurantName: restaurantName || existingData.restaurantName || 'Unknown',
-            status: 'completed',
-            progress: finalStats?.progress || existingData.progress || { current: 0, total: 0 },
-            reviewCount: finalStats?.totalReviews || existingData.reviewCount || 0,
-            repliesCount: finalStats?.repliesGenerated || existingData.repliesCount || 0,
-            isLiveUpdate: false,
-            completedAt: new Date().toISOString()
-        };
-        this.restaurantProcessingMap.set(urlKey, completedData);
-        this.renderProcessingTable();
-        console.log(`[Dashboard] Marked restaurant as completed: ${restaurantName} (${urlKey})`);
-    }
-
-    // Mark a restaurant with error status
-    markRestaurantError(url, restaurantName, errorMessage) {
-        if (!this.restaurantProcessingMap) {
-            this.restaurantProcessingMap = new Map();
-        }
-        
-        const existingData = this.restaurantProcessingMap.get(url) || {};
-        
-        const errorData = {
-            ...existingData,
-            url,
-            restaurantName: restaurantName || existingData.restaurantName || 'Unknown',
-            status: 'error',
-            errorMessage: errorMessage,
-            isLiveUpdate: false,
-            errorAt: new Date().toISOString()
-        };
-        
-        this.restaurantProcessingMap.set(url, errorData);
-        this.renderProcessingTable();
-        
-        console.log(`[Dashboard] Marked restaurant with error: ${restaurantName} (${url}) - ${errorMessage}`);
-    }
-
+    // LEGACY METHODS REMOVED - These methods are no longer needed since we now track jobs by ID
+    // Job status updates are now handled by handleJobStatusUpdate() method
+    // - updateRealtimeProgressDisplay() 
+    // - markRestaurantCompleted()
+    // - markRestaurantError()
+    
     // Clear the processing table (when starting new processing)
     clearProcessingTable() {
-        if (this.restaurantProcessingMap) {
-            this.restaurantProcessingMap.clear();
+        if (this.jobProcessingMap) {
+            this.jobProcessingMap.clear();
         }
         if (this.elements.processingTableBody) {
             this.elements.processingTableBody.innerHTML = '';
         }
-        console.log('[Dashboard] Processing table cleared');
+        console.log('[Dashboard] Job processing table cleared');
     }
 
     // Utility: Normalize URL for deduplication (removes trailing slash, lowercases, strips query/hash)
@@ -2494,6 +2852,40 @@ class PageController {
         } catch (e) {
             return url ? url.trim().toLowerCase().replace(/\/$/, '') : '';
         }
+    }
+
+    // Debug functions for console access
+    debugReviewsMap() {
+        console.log('[AutoZomato] Reviews Map Debug:', {
+            mapSize: this.reviewsMap.size,
+            reviews: Array.from(this.reviewsMap.entries()).map(([id, review]) => ({
+                reviewId: id,
+                customerName: review.customerName,
+                replied: review.replied,
+                hasReply: !!review.reply,
+                restaurant: review.restaurantName
+            }))
+        });
+        return this.reviewsMap;
+    }
+
+    debugTableRows() {
+        if (!this.elements.realTimeResultsTableBody) {
+            console.log('[AutoZomato] No table body found');
+            return [];
+        }
+        
+        const rows = Array.from(this.elements.realTimeResultsTableBody.querySelectorAll('tr[data-review-id]'));
+        console.log('[AutoZomato] Table Rows Debug:', {
+            rowCount: rows.length,
+            rows: rows.map(row => ({
+                reviewId: row.getAttribute('data-review-id'),
+                statusBadge: row.querySelector('.status-badge')?.textContent?.trim(),
+                customerName: row.cells[1]?.textContent?.trim(),
+                hasReply: !!row.querySelector('.reply-cell')?.textContent?.trim()
+            }))
+        });
+        return rows;
     }
 }
 
@@ -2514,6 +2906,10 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Make it globally accessible for onclick handlers immediately
     window.pageController = pageController;
+    
+    // Add debug functions to window for console access
+    window.debugReviewsMap = () => pageController.debugReviewsMap();
+    window.debugTableRows = () => pageController.debugTableRows();
     
     console.log('[PageController] PageController initialized and assigned to window');
     console.log('[PageController] window.pageController:', window.pageController);

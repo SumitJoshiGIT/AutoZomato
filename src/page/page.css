@@ -968,9 +968,39 @@ body {
     color: #155724;
 }
 
+.status-partial {
+    background: #fff3cd;
+    color: #856404;
+}
+
 .status-error {
     background: #f8d7da;
     color: #721c24;
+}
+
+.status-auto-publishing {
+    background: #ffeaa7;
+    color: #d63031;
+}
+
+.status-auto-reply-completed {
+    background: #d4edda;
+    color: #155724;
+}
+
+.status-cancelled {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.status-queued {
+    background: #e7f3ff;
+    color: #0066cc;
+}
+
+.status-loading {
+    background: #e7f3ff;
+    color: #0066cc;
 }
 
 .sentiment-positive {
@@ -1187,6 +1217,210 @@ body {
     border-color: #a0aec0;
 }
 
+/* Wait Time Setting Styles */
+.wait-time-item {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 10px;
+}
+
+.wait-time-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+}
+
+.wait-time-input {
+    padding: 8px 12px;
+    border: 1px solid #cbd5e0;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    color: #2d3748;
+    background: white;
+    width: 80px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.wait-time-input:focus {
+    outline: none;
+    border-color: #6721FF;
+    box-shadow: 0 0 0 3px rgba(103, 33, 255, 0.1);
+}
+
+.wait-time-input:hover {
+    border-color: #a0aec0;
+}
+
+.wait-time-unit {
+    font-size: 0.875rem;
+    color: #4a5568;
+    font-weight: 500;
+}
+
+/* Processing Mode Selection Styles */
+.processing-mode-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.processing-mode-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+}
+
+.mode-option {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    border: 2px solid #e2e8f0;
+    border-radius: 8px;
+    background: white;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.mode-option:hover {
+    border-color: #6721FF;
+    background: #f8f9ff;
+}
+
+.mode-option input[type="radio"] {
+    width: 18px;
+    height: 18px;
+    accent-color: #6721FF;
+}
+
+.mode-option input[type="radio"]:checked + label {
+    color: #6721FF;
+}
+
+.mode-option input[type="radio"]:checked ~ .mode-option {
+    border-color: #6721FF;
+    background: #f8f9ff;
+}
+
+.mode-option label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    cursor: pointer;
+    flex: 1;
+}
+
+.mode-title {
+    font-weight: 600;
+    color: #2d3748;
+    font-size: 1rem;
+}
+
+.mode-status {
+    font-size: 0.875rem;
+    color: #718096;
+    font-weight: 400;
+}
+
+/* Mode Status Colors */
+.mode-status.available {
+    color: #38a169;
+}
+
+.mode-status.unavailable {
+    color: #e53e3e;
+}
+
+.mode-status.configured {
+    color: #38a169;
+}
+
+.mode-status.not-configured {
+    color: #d69e2e;
+}
+
+.mode-status.checking {
+    color: #3182ce;
+}
+
+/* Configuration Panel Styles */
+.ollama-config-panel {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 20px;
+    margin-top: 15px;
+}
+
+.ollama-config-panel h3 {
+    color: #2d3748;
+    margin-bottom: 15px;
+    font-size: 1.1rem;
+}
+
+.config-grid {
+    display: grid;
+    gap: 15px;
+}
+
+.config-item {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.config-item label {
+    font-weight: 600;
+    color: #2d3748;
+    font-size: 0.875rem;
+}
+
+.config-item input[type="text"],
+.config-item input[type="password"],
+.config-item select {
+    padding: 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    transition: border-color 0.2s ease;
+}
+
+.config-item input[type="text"]:focus,
+.config-item input[type="password"]:focus,
+.config-item select:focus {
+    outline: none;
+    border-color: #6721FF;
+    box-shadow: 0 0 0 3px rgba(103, 33, 255, 0.1);
+}
+
+.config-item small {
+    color: #718096;
+    font-size: 0.75rem;
+}
+
+.test-button {
+    background: #6721FF;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+.test-button:hover {
+    background: #5a1dd9;
+}
+
+.test-button:disabled {
+    background: #a0aec0;
+    cursor: not-allowed;
+}
+
 /* Results Section Styles */
 .results-section {
     background: white;
@@ -1307,6 +1541,11 @@ body {
 .status-completed {
     background: #c6f6d5;
     color: #22543d;
+}
+
+.status-partial {
+    background: #faf089;
+    color: #744210;
 }
 
 .status-processing {
@@ -1437,6 +1676,18 @@ body {
 .processing-table .progress-text {
     font-size: 0.8rem;
     color: #718096;
+    white-space: nowrap;
+}
+
+/* Job ID Badge Styles */
+.job-id-badge {
+    background: #6721FF;
+    color: white;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    font-family: 'Courier New', monospace;
     white-space: nowrap;
 }
 

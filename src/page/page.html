@@ -78,14 +78,47 @@
                                 <small>Automatically close tabs after processing</small>
                             </div>
                         </div>
-                        <div class="setting-item">
-                            <label class="toggle-switch">
-                                <input type="checkbox" id="gptModeToggle">
-                                <span class="toggle-slider"></span>
-                            </label>
+                        
+                        <!-- Processing Mode Selection -->
+                        <div class="setting-item processing-mode-item">
                             <div class="setting-info">
-                                <label for="gptModeToggle">GPT Mode</label>
-                                <small>Use OpenAI GPT-4o Mini instead of local Ollama</small>
+                                <label>Processing Mode</label>
+                                <small>Select how replies are generated</small>
+                            </div>
+                            <div class="processing-mode-controls">
+                                <div class="mode-option">
+                                    <input type="radio" id="ollamaMode" name="processingMode" value="ollama" checked>
+                                    <label for="ollamaMode">
+                                        <span class="mode-title">Ollama (Local AI)</span>
+                                        <span class="mode-status" id="ollamaStatus">Checking...</span>
+                                    </label>
+                                </div>
+                                <div class="mode-option">
+                                    <input type="radio" id="gptMode" name="processingMode" value="gpt">
+                                    <label for="gptMode">
+                                        <span class="mode-title">GPT (OpenAI)</span>
+                                        <span class="mode-status" id="gptStatus">Not configured</span>
+                                    </label>
+                                </div>
+                                <div class="mode-option">
+                                    <input type="radio" id="offlineMode" name="processingMode" value="offline">
+                                    <label for="offlineMode">
+                                        <span class="mode-title">Offline Mode</span>
+                                        <span class="mode-status">Template-based responses</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Reply Wait Time Setting -->
+                        <div class="setting-item wait-time-item">
+                            <div class="setting-info">
+                                <label for="replyWaitTime">Reply Wait Time</label>
+                                <small>Minimum wait time between replies (in seconds)</small>
+                            </div>
+                            <div class="wait-time-controls">
+                                <input type="number" id="replyWaitTime" min="0" max="300" value="3" class="wait-time-input">
+                                <span class="wait-time-unit">seconds</span>
                             </div>
                         </div>
                         
@@ -120,20 +153,43 @@
                                 <label for="gptApiKey">OpenAI API Key:</label>
                                 <input type="password" id="gptApiKey" placeholder="sk-...">
                                 <small>Your API key will be stored locally and used for GPT requests</small>
-                            </div>                        <div class="config-item">
-                            <label for="gptModel">Model:</label>
-                            <select id="gptModel">
-                                <option value="gpt-4o-mini">GPT-4o Mini (Recommended)</option>
-                                <option value="gpt-4">GPT-4</option>
-                                <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
-                            </select>
-                        </div>
-                        <div class="config-item">
-                            <button id="testGptConnection" class="test-button">Test Connection</button>
+                            </div>
+                            <div class="config-item">
+                                <label for="gptModel">Model:</label>
+                                <select id="gptModel">
+                                    <option value="gpt-4o-mini">GPT-4o Mini (Recommended)</option>
+                                    <option value="gpt-4">GPT-4</option>
+                                    <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                                </select>
+                            </div>
+                            <div class="config-item">
+                                <button id="testGptConnection" class="test-button">Test Connection</button>
+                            </div>
                         </div>
                     </div>
-                    <div class="gpt-status">
-                        <span id="gptStatus">Not configured</span>
+                    
+                    <!-- Ollama Configuration Panel -->
+                    <div id="ollamaConfigPanel" class="ollama-config-panel" style="display: none;">
+                        <h3>Ollama Configuration</h3>
+                        <div class="config-grid">
+                            <div class="config-item">
+                                <label for="ollamaUrl">Ollama URL:</label>
+                                <input type="text" id="ollamaUrl" placeholder="http://localhost:11434" value="http://localhost:11434">
+                                <small>URL where Ollama is running</small>
+                            </div>
+                            <div class="config-item">
+                                <label for="ollamaModel">Model:</label>
+                                <select id="ollamaModel">
+                                    <option value="llama3:8b">Llama 3 8B</option>
+                                    <option value="llama3:70b">Llama 3 70B</option>
+                                    <option value="mixtral:8x7b">Mixtral 8x7B</option>
+                                    <option value="codellama:7b">CodeLlama 7B</option>
+                                </select>
+                            </div>
+                            <div class="config-item">
+                                <button id="testOllamaConnection" class="test-button">Test Connection</button>
+                            </div>
+                        </div>
                     </div>
                     </div>
                 </div>
@@ -198,9 +254,7 @@
         </main>
     </div>
 
-    <!-- Include component scripts -->
-    <script src="components/ReviewResultsTable.js"></script>
-    <script src="page.js"></script>
+    <!-- Modals -->
     <div id="addGroupModal" class="modal" style="display: none;">
         <div class="modal-content">
             <div class="modal-header">
