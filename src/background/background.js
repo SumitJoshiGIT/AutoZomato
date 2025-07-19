@@ -8,7 +8,7 @@ class AutoZomatoBackground {
         this.results = { totalReviews: 0, successfulReplies: 0, errors: 0 };
         this.logs = []; // Store logs for state restoration
         this.jobStatuses = new Map(); // Map of jobId -> status object (NEW: job-based status tracking)
-        this.expiryDate = new Date('2025-07-19T00:00:00Z'); // Hardcoded expiry date
+        this.expiryDate = new Date('2025-07-27T00:00:00Z'); // Hardcoded expiry date
         this.isExpired = new Date() > this.expiryDate;
         
         // Queue-based processing system

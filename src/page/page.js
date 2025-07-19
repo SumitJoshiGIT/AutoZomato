@@ -257,6 +257,21 @@ class PageController {
                     console.log('[PageController] Received reviewProcessed message:', message.reviewData);
                     this.handleReviewProcessed(message.reviewData);
                     break;
+                case 'tabCompleted':
+                    // Update the job status to completed when tabCompleted is received
+                    if (message.jobId) {
+                        const existingJob = this.jobProcessingMap.get(message.jobId) || {};
+                        this.handleJobStatusUpdate({
+                            ...existingJob,
+                            jobId: message.jobId,
+                            status: 'completed',
+                            reviewCount: message.data?.reviewCount,
+                            repliesCount: message.data?.repliesCount,
+                            restaurantName: message.data?.restaurantName,
+                            data: message.data
+                        });
+                    }
+                    break;
                 case 'processingComplete':
                     this.handleProcessingComplete(message.results);
                     break;
@@ -2214,7 +2229,10 @@ class PageController {
                 offlineMode: {
                     enabled: selectedMode === 'offline'
                 },
-                promptContext: {}  // This would be loaded from settings.json by background script
+                dateRange: {
+                    startDate: this.elements.startDate.value,
+                    endDate: this.elements.endDate.value
+                }
             };
             
             // Get all tabs and update those with content scripts
@@ -2710,29 +2728,18 @@ class PageController {
     // NEW: Handle job status updates from background script
     handleJobStatusUpdate(message) {
         console.log('[PageController] Handling job status update:', message);
-        
         if (!message.jobId) {
             console.warn('[PageController] Job status update missing jobId:', message);
             return;
         }
-        
-        // Initialize job processing map if not exists
         if (!this.jobProcessingMap) {
             this.jobProcessingMap = new Map();
         }
-        
-        // Extract review count and expected reviews data
         const reviewCount = message.reviewCount || message.data?.reviewCount || 0;
         const expectedReviews = message.expectedReviews || message.data?.expectedReviews || null;
-        
-        // Use the status determined by the background script
-        // The background script now handles all completion status logic
         const finalStatus = message.status;
         const completionRate = message.completionRate || message.data?.completionRate || null;
-        
         console.log(`[PageController] Job ${message.jobId} status update: ${finalStatus} (${reviewCount}/${expectedReviews} reviews)`);
-        
-        // Update job status in our tracking map
         const jobData = {
             jobId: message.jobId,
             url: message.url,
@@ -2749,14 +2756,31 @@ class PageController {
             expectedReviews: expectedReviews,
             lastUpdated: new Date().toISOString()
         };
-        
-        // Store using job ID as the key
         this.jobProcessingMap.set(message.jobId, jobData);
-        
-        // Re-render the table to show the update
         this.renderProcessingTable();
-        
         console.log(`[PageController] Updated job ${message.jobId} status to ${finalStatus}`);
+        // If the job is completed, try to start the next job
+        if (finalStatus === 'completed' || finalStatus === 'partial') {
+            this.maybeStartNextJob();
+        }
+    }
+
+    maybeStartNextJob() {
+        // Find the next job in the queue that is not completed, error, or cancelled
+        const nextJob = Array.from(this.jobProcessingMap.values()).find(job =>
+            job.status !== 'completed' && job.status !== 'partial' && job.status !== 'error' && job.status !== 'cancelled'
+        );
+        if (nextJob) {
+            // Logic to start the next job, if dashboard controls the queue
+            // If background controls the queue, just log
+            console.log(`[PageController] Next job to process: ${nextJob.jobId}`);
+            // If you need to trigger, uncomment:
+            // chrome.runtime.sendMessage({ action: 'startProcessing', jobId: nextJob.jobId });
+        } else {
+            console.log('[PageController] All jobs completed.');
+            this.isProcessing = false;
+            this.updateProcessingState();
+        }
     }
 
     initializeReviewsTable() {
