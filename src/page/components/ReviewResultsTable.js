@@ -298,7 +298,7 @@ class ReviewResultsTable {
 
         const headers = ['Restaurant', 'Customer', 'Extracted Name', 'Rating', 'Sentiment', 'AI Complaint ID', 'AI Complaint Type', 'Corrected Complaint ID', 'Corrected Complaint Type', 'Review Text', 'Reply', 'Status', 'Timestamp'];
         const rows = Array.from(this.reviewsMap.values()).map(review => [
-            review.restaurantName || '',
+            (review.restaurantName || '').replace(/\n/g, ' '),
             review.customerName || '',
             review.extractedName || '',
             review.rating || '',
@@ -309,7 +309,6 @@ class ReviewResultsTable {
             this.getComplaintName(review.correctedComplaintId) || '',
             review.reviewText || '',
             review.reply || '',
-            review.replied ? 'Replied' : 'Processing',
             new Date().toISOString()
         ]);
 
