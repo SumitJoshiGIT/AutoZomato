@@ -39,12 +39,6 @@ class ReviewResultsTable {
                         <span class="stat-item">
                             <strong>Reviews:</strong> <span id="reviewCount">0</span>
                         </span>
-                        <span class="stat-item">
-                            <strong>Replies:</strong> <span id="replyCount">0</span>
-                        </span>
-                        <span class="stat-item">
-                            <strong>Success Rate:</strong> <span id="successRate">0%</span>
-                        </span>
                     </div>
                 </div>
                 
@@ -61,7 +55,6 @@ class ReviewResultsTable {
                                 <th>Corrected Complaint</th>
                                 <th>Review Text</th>
                                 <th>Reply</th>
-                                <th>Status</th>
                                 <th>Time</th>
                             </tr>
                         </thead>
@@ -168,9 +161,6 @@ class ReviewResultsTable {
         const sentiment = reviewData.sentiment || 'Neutral';
         const sentimentClass = typeof sentiment === 'string' ? sentiment.toLowerCase() : 'neutral';
         
-        const statusBadge = reviewData.replied ? 
-            `<span class="status-badge status-success">✅ Replied</span>` :
-            `<span class="status-badge status-processing">⏳ Processing</span>`;
 
         const rating = reviewData.rating ? 
             `<span class="rating-stars">${'★'.repeat(Math.floor(reviewData.rating))}${'☆'.repeat(5 - Math.floor(reviewData.rating))}</span> (${reviewData.rating})` :
@@ -209,7 +199,6 @@ class ReviewResultsTable {
             <td>${correctedComplaintDisplay}</td>
             <td>${reviewText}</td>
             <td class="reply-cell">${reply}</td>
-            <td class="status-cell">${statusBadge}</td>
             <td>${new Date().toLocaleTimeString()}</td>
         `;
 
@@ -244,13 +233,7 @@ class ReviewResultsTable {
         }, 1000);
 
         // Update specific cells if needed
-        if (reviewData.replied) {
-            const statusCell = existingRow.querySelector('.status-cell');
-            if (statusCell) {
-                statusCell.innerHTML = '<span class="status-badge status-success">✅ Replied</span>';
-            }
-        }
-
+       
         if (reviewData.reply) {
             const replyCell = existingRow.querySelector('.reply-cell');
             if (replyCell) {

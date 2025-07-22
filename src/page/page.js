@@ -1061,7 +1061,7 @@ class PageController {
             if (!this.elements.processingTable && data.jobStatuses.length > 0) {
                 this.initializeProcessingTable(false); // Don't clear map when restoring state
             }
-            
+            console.log("JOB:",data.jobStatuses)
             // Update job processing map with data from background
             data.jobStatuses.forEach(job => {
                 if (job.jobId) {
@@ -1161,9 +1161,6 @@ class PageController {
             console.log('[Dashboard] Updating overall progress from tab progress:', progress);
             this.updateProgress(progress.current, progress.total);
         }
-        
-        // Update real-time results display with live progress
-        this.updateRealtimeProgressDisplay(tabId, url, restaurantName, progress, status);
         
         console.log(`Tab ${tabId} progress: ${progress.current}/${progress.total} - ${restaurantName}`);
     }
@@ -1371,14 +1368,7 @@ class PageController {
                             <span class="stat-label">Total Reviews:</span>
                             <span id="realTimeTotalReviews">0</span>
                         </div>
-                        <div class="stat-item">
-                            <span class="stat-label">Replies Generated:</span>
-                            <span id="realTimeRepliesGenerated">0</span>
-                        </div>
-                        <div class="stat-item">
-                            <span class="stat-label">Processing Progress:</span>
-                            <span id="realTimeProgress">0%</span>
-                        </div>
+                  
                     </div>
                 </div>
                 <div class="results-table-container">
@@ -1451,7 +1441,6 @@ class PageController {
                 <td>5★★★★★ (5)</td>
                 <td><span class="sentiment-positive">Positive</span></td>
                 <td class="reply-cell">TEST Reply</td>
-                <td class="status-cell"><span class="status-badge status-completed">TEST Status</span></td>
                 <td>${new Date().toLocaleTimeString()}</td>
             `;
             this.elements.realTimeResultsTableBody.appendChild(testRow);
@@ -1555,7 +1544,7 @@ class PageController {
             <td>${rating}</td>
             <td><span class="sentiment-${sentimentClass}">${sentiment}</span></td>
             <td class="reply-cell">${reviewData.reply || ''}</td>
-            <td class="status-cell">${statusBadge}</td>
+            
             <td>${new Date().toLocaleTimeString()}</td>
         `;
         
@@ -1663,7 +1652,8 @@ class PageController {
             <td>${rating}</td>
             <td><span class="sentiment-${sentimentClass}">${sentiment}</span></td>
             <td class="reply-cell">${reviewData.reply || ''}</td>
-            <td class="status-cell">${statusBadge}</td>
+            
+            
             <td>${new Date().toLocaleTimeString()}</td>
         `;
         
@@ -2466,9 +2456,7 @@ class PageController {
                                             <td class="reply-cell">
                                                 <div class="reply-text">${log.reply || 'No reply generated'}</div>
                                             </td>
-                                            <td class="status-cell">
-                                                ${log.replied ? '✅ Sent' : '❌ Not Sent'}
-                                            </td>
+                                         
                                         </tr>
                                     `).join('')}
                                 </tbody>
@@ -2599,8 +2587,6 @@ class PageController {
                                 <th>URL</th>
                                 <th>Status</th>
                                 <th>Progress</th>
-                                <th>Reviews Found</th>
-                                <th>Replies Generated</th>
                             </tr>
                         </thead>
                         <tbody id="processingTableBody">
@@ -2713,11 +2699,6 @@ class PageController {
                             <span class="progress-text">${progress} (${percentage}%)</span>
                         </div>
                     </td>
-                    <td>
-                        ${job.reviewCount || 0}
-                        ${job.status === 'partial' && job.expectedReviews ? `/${job.expectedReviews}` : ''}
-                    </td>
-                    <td>${job.repliesCount || 0}</td>
                 </tr>
             `;
         }).join('');
@@ -2760,7 +2741,7 @@ class PageController {
         this.renderProcessingTable();
         console.log(`[PageController] Updated job ${message.jobId} status to ${finalStatus}`);
         // If the job is completed, try to start the next job
-        if (finalStatus === 'completed' || finalStatus === 'partial') {
+        if (finalStatus === 'completed' || finalStatus === 'partial' ||finalStatus=='auto-reply-completed' ) {
             this.maybeStartNextJob();
         }
     }
@@ -2768,14 +2749,14 @@ class PageController {
     maybeStartNextJob() {
         // Find the next job in the queue that is not completed, error, or cancelled
         const nextJob = Array.from(this.jobProcessingMap.values()).find(job =>
-            job.status !== 'completed' && job.status !== 'partial' && job.status !== 'error' && job.status !== 'cancelled'
+            job.status !== 'completed' && job.status !== 'partial' && job.status !== 'error' && job.status !== 'cancelled'&&job.status!=="auto-reply-completed" && job.status!=="auto-publishing"
         );
         if (nextJob) {
             // Logic to start the next job, if dashboard controls the queue
             // If background controls the queue, just log
             console.log(`[PageController] Next job to process: ${nextJob.jobId}`);
             // If you need to trigger, uncomment:
-            // chrome.runtime.sendMessage({ action: 'startProcessing', jobId: nextJob.jobId });
+            chrome.runtime.sendMessage({ action: 'startProcessing', jobId: nextJob.jobId });
         } else {
             console.log('[PageController] All jobs completed.');
             this.isProcessing = false;
@@ -2810,7 +2791,7 @@ class PageController {
         }
         
         const csvData = [
-            ['Restaurant', 'Customer', 'Detected FirstName', 'Rating', 'Review', 'Reply', 'Sentiment', 'Complaint ID', 'Status', 'Timestamp'],
+            ['Restaurant', 'Customer', 'Detected FirstName', 'Rating', 'Review', 'Reply', 'Sentiment', 'Complaint ID', 'Timestamp'],
             ...reviews.map(r => [
                 r.restaurantName || '',
                 r.customerName || '',
@@ -2820,7 +2801,6 @@ class PageController {
                 r.reply || '',
                 r.sentiment || '',
                 r.complaintId || '',
-                r.replied ? 'Sent' : 'Not Sent',
                 r.timestamp ? new Date(r.timestamp).toLocaleString() : ''
             ])
         ];

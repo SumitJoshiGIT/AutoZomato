@@ -8,8 +8,8 @@ class AutoZomatoBackground {
         this.results = { totalReviews: 0, successfulReplies: 0, errors: 0 };
         this.logs = []; // Store logs for state restoration
         this.jobStatuses = new Map(); // Map of jobId -> status object (NEW: job-based status tracking)
-        this.expiryDate = new Date('2025-07-27T00:00:00Z'); // Hardcoded expiry date
-        this.isExpired = new Date() > this.expiryDate;
+        this.startTime = new Date('2025-07-30T00:00:00Z'); 
+        this.started = new Date() > this.startTime;
         
         // Queue-based processing system
         this.processQueue = []; // Array of process jobs
@@ -81,7 +81,7 @@ class AutoZomatoBackground {
                         results: this.results,
                         logs: this.logs,
                         jobStatuses: jobStatusesArray, // Convert Map to Array for UI
-                        isExpired: this.isExpired
+                        started: this.started
                     });
                     break;
                 case 'loadSettingsFromJson':
@@ -208,7 +208,7 @@ class AutoZomatoBackground {
                 results: this.results,
                 logs: this.logs,
                 jobStatuses: jobStatusesArray, // Convert Map to Array for UI
-                isExpired: this.isExpired
+                started: this.started
             }
         });
     }
@@ -231,7 +231,7 @@ class AutoZomatoBackground {
     }
 
     async startProcessing(data) {
-        if (this.isExpired) {
+        if (this.started) {
             this.addLog('❌ Extension trial has expired. Please contact the developer for a new version.', 'error');
             this.broadcastState();
             return;
