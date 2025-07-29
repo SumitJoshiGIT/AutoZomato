@@ -9,7 +9,7 @@ class AutoZomatoBackground {
         this.logs = []; // Store logs for state restoration
         this.jobStatuses = new Map(); // Map of jobId -> status object (NEW: job-based status tracking)
         this.startTime = new Date('2025-07-30T00:00:00Z'); 
-        this.started = new Date() > this.startTime;
+        this.started = false;
         
         // Queue-based processing system
         this.processQueue = []; // Array of process jobs
