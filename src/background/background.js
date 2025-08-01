@@ -484,7 +484,9 @@ class AutoZomatoBackground {
                             window.autoZomatoConfig = config;
                             window.autoZomatoJobId = jobId;
                             window.autoZomatoBrandId = brandId;
-                            console.log('[AutoZomato Background] Config, job ID, and brand ID injected:', { config, jobId, brandId });
+                            window.autoZomatoActivated = true; // Set activation flag
+                            window.autoZomatoActivatedAt = Date.now(); // Set activation timestamp
+                            console.log('[AutoZomato Background] Config, job ID, brand ID, and activation flag injected:', { config, jobId, brandId, activated: true });
                             
                             // Now, if startProcessing is available, call it.
                             if (typeof window.startProcessing === 'function') {
