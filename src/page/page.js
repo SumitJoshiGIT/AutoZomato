@@ -14,6 +14,7 @@ class PageController {
         this.restaurantNameMap = new Map();
         this.jobProcessingMap = new Map(); // New: Track job processing status by job ID (not URL)
         this.lastRunDate = null;
+        this.csvData = null; // Store parsed CSV data for upload
         
         // Initialize the new ReviewResultsTable component
         this.reviewResultsTable = null;
@@ -21,6 +22,7 @@ class PageController {
         this.initializeElements();
         this.bindEvents();
         this.setupMessageListener();
+        this.loadAvailableBrands();
         this.loadStateOnStartup();
     }
 
@@ -66,6 +68,7 @@ class PageController {
             urlsByGroupContainer: document.getElementById('urlsByGroupContainer'),
             groupSelect: document.getElementById('groupSelect'),
             addUrlBtn: document.getElementById('addUrlBtn'),
+            uploadCsvBtn: document.getElementById('uploadCsvBtn'),
             selectAllUrlsBtn: document.getElementById('selectAllUrlsBtn'),
             deselectAllUrlsBtn: document.getElementById('deselectAllUrlsBtn'),
             
@@ -88,13 +91,20 @@ class PageController {
             // Modals
             addGroupModal: document.getElementById('addGroupModal'),
             addUrlModal: document.getElementById('addUrlModal'),
+            uploadCsvModal: document.getElementById('uploadCsvModal'),
             groupName: document.getElementById('groupName'),
+            groupBrand: document.getElementById('groupBrand'),
             urlInput: document.getElementById('urlInput'),
             urlGroup: document.getElementById('urlGroup'),
+            csvFile: document.getElementById('csvFile'),
+            csvPreview: document.getElementById('csvPreview'),
+            csvPreviewContent: document.getElementById('csvPreviewContent'),
             saveGroupBtn: document.getElementById('saveGroupBtn'),
             cancelGroupBtn: document.getElementById('cancelGroupBtn'),
             saveUrlBtn: document.getElementById('saveUrlBtn'),
-            cancelUrlBtn: document.getElementById('cancelUrlBtn')
+            cancelUrlBtn: document.getElementById('cancelUrlBtn'),
+            uploadCsvConfirmBtn: document.getElementById('uploadCsvConfirmBtn'),
+            cancelCsvBtn: document.getElementById('cancelCsvBtn')
         };
         
         // Check for missing elements
@@ -147,10 +157,16 @@ class PageController {
         
         // URL Management
         this.elements.addUrlBtn.addEventListener('click', () => this.showAddUrlModal());
+        this.elements.uploadCsvBtn.addEventListener('click', () => this.showUploadCsvModal());
         this.elements.selectAllUrlsBtn.addEventListener('click', () => this.selectAllUrls());
         this.elements.deselectAllUrlsBtn.addEventListener('click', () => this.deselectAllUrls());
         this.elements.saveUrlBtn.addEventListener('click', () => this.saveNewUrl());
         this.elements.cancelUrlBtn.addEventListener('click', () => this.hideAddUrlModal());
+        
+        // CSV Upload
+        this.elements.csvFile.addEventListener('change', (e) => this.handleCsvFileSelection(e));
+        this.elements.uploadCsvConfirmBtn.addEventListener('click', () => this.processCsvUpload());
+        this.elements.cancelCsvBtn.addEventListener('click', () => this.hideUploadCsvModal());
         
         // Processing
         this.elements.startProcessing.addEventListener('click', () => this.startProcessing());
@@ -164,7 +180,7 @@ class PageController {
             btn.addEventListener('click', (e) => {
                 const modal = e.target.closest('.modal');
                 if (modal) {
-                    modal.style.display = 'none';
+                    this.handleModalClose(modal);
                 }
             });
         });
@@ -173,7 +189,7 @@ class PageController {
         document.querySelectorAll('.modal').forEach(modal => {
             modal.addEventListener('click', (e) => {
                 if (e.target === modal) {
-                    modal.style.display = 'none';
+                    this.handleModalClose(modal);
                 }
             });
         });
@@ -295,6 +311,10 @@ class PageController {
             ]);
             
             this.groups = result.groups || [];
+            
+            // Migrate existing groups to include brand ID if missing
+            this.migrateGroupsForBrandSupport();
+            
             this.selectedGroups = new Set(result.selectedGroups || []);
             this.selectedUrls = new Set(result.selectedUrls || []);
             
@@ -417,6 +437,7 @@ class PageController {
         this.elements.groupsList.innerHTML = this.groups.map(group => {
             const isSelected = this.selectedGroups.has(group.id);
             const urlCount = group.urls ? group.urls.length : 0;
+            const brandInfo = group.brandId ? `(Brand: ${this.getBrandName(group.brandId)})` : '';
             
             return `
                 <div class="group-item ${isSelected ? 'selected' : ''}">
@@ -424,7 +445,7 @@ class PageController {
                         <label class="group-checkbox">
                             <input type="checkbox" ${isSelected ? 'checked' : ''} 
                                    data-group-id="${group.id}" class="group-checkbox-input">
-                            <span>${group.name}</span>
+                            <span>${group.name} ${brandInfo}</span>
                         </label>
                         <div class="group-actions">
                             <button class="btn btn-small btn-secondary edit-group-btn" data-group-id="${group.id}">
@@ -441,6 +462,46 @@ class PageController {
                 </div>
             `;
         }).join('');
+    }
+
+    // Method to get brand ID for a specific URL - used by content script
+    getBrandIdForUrl(url) {
+        for (const group of this.groups) {
+            if (group.urls && group.urls.includes(url) && group.brandId) {
+                return group.brandId;
+            }
+        }
+        return null;
+    }
+
+    // Migration function to add brandId to existing groups
+    migrateGroupsForBrandSupport() {
+        let needsSave = false;
+        
+        this.groups.forEach(group => {
+            if (!group.brandId) {
+                group.brandId = '1'; // Default to brand 1 (first brand)
+                needsSave = true;
+                console.log(`[PageController] Migrated group "${group.name}" to use default brand ID: 1`);
+            }
+        });
+        
+        if (needsSave) {
+            console.log('[PageController] Groups migrated for brand support, saving data...');
+            this.saveData();
+        }
+    }
+
+    getBrandName(brandId) {
+        // This will be populated when we load the brands
+        const brandSelect = this.elements.groupBrand;
+        if (brandSelect) {
+            const option = brandSelect.querySelector(`option[value="${brandId}"]`);
+            if (option) {
+                return option.textContent;
+            }
+        }
+        return `ID: ${brandId}`;
     }
 
     renderUrlsByGroup() {
@@ -617,6 +678,42 @@ class PageController {
     }
 
     // Group Management Methods
+    async loadAvailableBrands() {
+        try {
+            const response = await fetch(chrome.runtime.getURL('response_bank.json'));
+            const responseBank = await response.json();
+            
+            // Clear existing options
+            this.elements.groupBrand.innerHTML = '<option value="">Select a brand...</option>';
+            
+            // Populate brand options
+            Object.keys(responseBank).forEach(brandId => {
+                const brand = responseBank[brandId];
+                if (brand && brand.name) {
+                    const option = document.createElement('option');
+                    option.value = brandId;
+                    option.textContent = brand.name;
+                    this.elements.groupBrand.appendChild(option);
+                }
+            });
+            
+            console.log('[PageController] Loaded brands for group selection:', Object.keys(responseBank));
+            return responseBank; // Return the response bank data
+        } catch (error) {
+            console.error('[PageController] Failed to load brands:', error);
+            // Add fallback option
+            const fallbackOption = document.createElement('option');
+            fallbackOption.value = '1';
+            fallbackOption.textContent = 'Default Brand';
+            this.elements.groupBrand.appendChild(fallbackOption);
+            
+            // Return a fallback response bank
+            return {
+                '1': { name: 'Default Brand', categories: {}, complaints: {} }
+            };
+        }
+    }
+
     showAddGroupModal() {
         this.elements.addGroupModal.style.display = 'flex';
         this.elements.groupName.focus();
@@ -625,12 +722,20 @@ class PageController {
     hideAddGroupModal() {
         this.elements.addGroupModal.style.display = 'none';
         this.elements.groupName.value = '';
+        this.elements.groupBrand.value = '';
     }
 
     async saveNewGroup() {
         const name = this.elements.groupName.value.trim();
+        const brandId = this.elements.groupBrand.value;
+        
         if (!name) {
             alert('Please enter a group name');
+            return;
+        }
+        
+        if (!brandId) {
+            alert('Please select a brand for this group');
             return;
         }
         
@@ -642,6 +747,7 @@ class PageController {
         const newGroup = {
             id: Date.now().toString(),
             name: name,
+            brandId: brandId,
             urls: []
         };
         
@@ -845,6 +951,335 @@ class PageController {
         return allUrls;
     }
 
+    // CSV Upload Methods
+    showUploadCsvModal() {
+        this.elements.uploadCsvModal.style.display = 'flex';
+        this.elements.csvFile.value = '';
+        this.elements.csvPreview.style.display = 'none';
+        this.elements.uploadCsvConfirmBtn.disabled = true;
+        this.csvData = null;
+    }
+
+    hideUploadCsvModal() {
+        this.elements.uploadCsvModal.style.display = 'none';
+        this.elements.csvFile.value = '';
+        this.elements.csvPreview.style.display = 'none';
+        this.elements.uploadCsvConfirmBtn.disabled = true;
+        this.csvData = null;
+    }
+
+    async handleCsvFileSelection(event) {
+        const file = event.target.files[0];
+        if (!file) {
+            this.elements.csvPreview.style.display = 'none';
+            this.elements.uploadCsvConfirmBtn.disabled = true;
+            return;
+        }
+
+        if (!file.name.toLowerCase().endsWith('.csv')) {
+            alert('Please select a CSV file');
+            return;
+        }
+
+        try {
+            const text = await this.readFileAsText(file);
+            const parsedData = this.parseCsvData(text);
+            await this.validateCsvData(parsedData);
+            this.displayCsvPreview(parsedData);
+            this.elements.uploadCsvConfirmBtn.disabled = false;
+        } catch (error) {
+            console.error('Error processing CSV file:', error);
+            alert(`Error processing CSV file: ${error.message}`);
+            this.elements.csvPreview.style.display = 'none';
+            this.elements.uploadCsvConfirmBtn.disabled = true;
+        }
+    }
+
+    readFileAsText(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = e => resolve(e.target.result);
+            reader.onerror = e => reject(new Error('Failed to read file'));
+            reader.readAsText(file);
+        });
+    }
+
+    parseCsvData(text) {
+        const lines = text.trim().split('\n');
+        if (lines.length === 0) {
+            throw new Error('CSV file is empty');
+        }
+
+        // Parse CSV manually to handle potential commas in quoted fields
+        const rows = [];
+        for (let line of lines) {
+            const row = this.parseCsvLine(line);
+            if (row.length > 0) {
+                rows.push(row);
+            }
+        }
+
+        if (rows.length === 0) {
+            throw new Error('No valid data found in CSV file');
+        }
+
+        // Check if first row is a header (contains 'group', 'brand', 'url' keywords)
+        const firstRow = rows[0].map(cell => cell.toLowerCase());
+        const hasHeader = firstRow.some(cell => 
+            cell.includes('group') || cell.includes('brand') || cell.includes('url')
+        );
+
+        const dataRows = hasHeader ? rows.slice(1) : rows;
+        const processedData = [];
+
+        dataRows.forEach((row, index) => {
+            const rowNumber = hasHeader ? index + 2 : index + 1;
+            
+            if (row.length < 3) {
+                // Pad with empty strings if not enough columns
+                while (row.length < 3) {
+                    row.push('');
+                }
+            }
+
+            const [groupName, brandId, url] = row.map(cell => cell.trim());
+            
+            processedData.push({
+                rowNumber,
+                groupName,
+                brandId,
+                url,
+                status: 'pending',
+                message: ''
+            });
+        });
+
+        return {
+            hasHeader,
+            data: processedData
+        };
+    }
+
+    parseCsvLine(line) {
+        const result = [];
+        let current = '';
+        let inQuotes = false;
+        
+        for (let i = 0; i < line.length; i++) {
+            const char = line[i];
+            
+            if (char === '"') {
+                inQuotes = !inQuotes;
+            } else if (char === ',' && !inQuotes) {
+                result.push(current);
+                current = '';
+            } else {
+                current += char;
+            }
+        }
+        
+        result.push(current);
+        return result.map(cell => cell.replace(/^"|"$/g, '').trim());
+    }
+
+    async validateCsvData(parsedData) {
+        // Load available brands for validation
+        const availableBrands = await this.loadAvailableBrands();
+        
+        if (!availableBrands || typeof availableBrands !== 'object') {
+            throw new Error('Failed to load brand data for validation');
+        }
+        
+        const brandIds = Object.keys(availableBrands);
+
+        parsedData.data.forEach(row => {
+            // Skip if brand ID is empty (as per requirements)
+            if (!row.brandId) {
+                row.status = 'skip';
+                row.message = 'No brand ID provided - will be skipped';
+                return;
+            }
+
+            // Validate brand ID exists
+            if (!brandIds.includes(row.brandId)) {
+                row.status = 'error';
+                row.message = `Brand ID "${row.brandId}" not found in response bank`;
+                return;
+            }
+
+            // Validate URL format
+            try {
+                new URL(row.url);
+            } catch (e) {
+                row.status = 'error';
+                row.message = 'Invalid URL format';
+                return;
+            }
+
+            // Check if group name is empty
+            if (!row.groupName) {
+                row.status = 'warning';
+                row.message = `Will create new group for brand "${availableBrands[row.brandId].name}"`;
+                return;
+            }
+
+            row.status = 'success';
+            row.message = `Will add to group "${row.groupName}"`;
+        });
+
+        this.csvData = parsedData;
+    }
+
+    displayCsvPreview(parsedData) {
+        const validRows = parsedData.data.filter(row => row.status !== 'skip');
+        const successCount = validRows.filter(row => row.status === 'success').length;
+        const errorCount = validRows.filter(row => row.status === 'error').length;
+        const warningCount = validRows.filter(row => row.status === 'warning').length;
+
+        let html = `
+            <table>
+                <thead>
+                    <tr>
+                        <th>Row</th>
+                        <th>Group Name</th>
+                        <th>Brand ID</th>
+                        <th>URL</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+
+        // Show first 10 rows for preview
+        const previewRows = parsedData.data.slice(0, 10);
+        previewRows.forEach(row => {
+            const rowClass = row.status === 'error' ? 'error-row' : 
+                           row.status === 'warning' ? 'warning-row' : '';
+            
+            html += `
+                <tr class="${rowClass}">
+                    <td>${row.rowNumber}</td>
+                    <td>${row.groupName || '<empty>'}</td>
+                    <td>${row.brandId || '<empty>'}</td>
+                    <td>${row.url.length > 40 ? row.url.substring(0, 40) + '...' : row.url}</td>
+                    <td title="${row.message}">${row.status}</td>
+                </tr>
+            `;
+        });
+
+        html += '</tbody></table>';
+
+        if (parsedData.data.length > 10) {
+            html += `<p style="margin-top: 10px; font-size: 12px; color: #64748b;">Showing first 10 rows of ${parsedData.data.length} total rows</p>`;
+        }
+
+        html += `
+            <div class="upload-stats">
+                <div class="upload-stat success">
+                    <span>Valid:</span>
+                    <span class="count">${successCount}</span>
+                </div>
+                <div class="upload-stat warning">
+                    <span>Auto-group:</span>
+                    <span class="count">${warningCount}</span>
+                </div>
+                <div class="upload-stat error">
+                    <span>Errors:</span>
+                    <span class="count">${errorCount}</span>
+                </div>
+                <div class="upload-stat">
+                    <span>Skipped:</span>
+                    <span class="count">${parsedData.data.length - validRows.length}</span>
+                </div>
+            </div>
+        `;
+
+        this.elements.csvPreviewContent.innerHTML = html;
+        this.elements.csvPreview.style.display = 'block';
+    }
+
+    async processCsvUpload() {
+        if (!this.csvData) {
+            alert('No CSV data to process');
+            return;
+        }
+
+        try {
+            const availableBrands = await this.loadAvailableBrands();
+            
+            if (!availableBrands || typeof availableBrands !== 'object') {
+                throw new Error('Failed to load brand data for processing');
+            }
+            
+            let addedCount = 0;
+            let createdGroups = 0;
+
+            for (const row of this.csvData.data) {
+                if (row.status === 'skip' || row.status === 'error') {
+                    continue;
+                }
+
+                let targetGroup;
+
+                if (row.groupName) {
+                    // Find existing group by name and brand
+                    targetGroup = this.groups.find(g => 
+                        g.name === row.groupName && g.brandId === row.brandId
+                    );
+                    
+                    if (!targetGroup) {
+                        // Create new group with specified name
+                        targetGroup = {
+                            id: this.generateId(),
+                            name: row.groupName,
+                            brandId: row.brandId,
+                            urls: [],
+                            selected: false
+                        };
+                        this.groups.push(targetGroup);
+                        createdGroups++;
+                    }
+                } else {
+                    // Create group named after brand
+                    const brandName = availableBrands[row.brandId].name;
+                    const groupName = `${brandName} Group`;
+                    
+                    targetGroup = this.groups.find(g => 
+                        g.name === groupName && g.brandId === row.brandId
+                    );
+                    
+                    if (!targetGroup) {
+                        targetGroup = {
+                            id: this.generateId(),
+                            name: groupName,
+                            brandId: row.brandId,
+                            urls: [],
+                            selected: false
+                        };
+                        this.groups.push(targetGroup);
+                        createdGroups++;
+                    }
+                }
+
+                // Add URL if not already present
+                if (!targetGroup.urls.includes(row.url)) {
+                    targetGroup.urls.push(row.url);
+                    addedCount++;
+                }
+            }
+
+            await this.saveData();
+            this.hideUploadCsvModal();
+            this.render();
+
+            alert(`CSV upload completed!\n\nAdded: ${addedCount} URLs\nCreated: ${createdGroups} new groups`);
+
+        } catch (error) {
+            console.error('Error processing CSV upload:', error);
+            alert(`Error processing CSV upload: ${error.message}`);
+        }
+    }
+
     // Processing Methods
     async startProcessing() {
         console.log('startProcessing called');
@@ -855,17 +1290,22 @@ class PageController {
             return;
         }
         
-        // Convert selected URLs to array
+        // Convert selected URLs to array with brand information
         const selectedUrls = Array.from(this.selectedUrls).map(urlKey => {
             // Split only on the first colon to handle URLs with colons
             const colonIndex = urlKey.indexOf(':');
-            if (colonIndex === -1) return urlKey; // fallback if no colon found
+            if (colonIndex === -1) return { url: urlKey, brandId: null }; // fallback if no colon found
             const groupId = urlKey.substring(0, colonIndex);
             const url = urlKey.substring(colonIndex + 1);
-            return url;
+            
+            // Find the group and get its brand ID
+            const group = this.groups.find(g => g.id === groupId);
+            const brandId = group ? group.brandId : null;
+            
+            return { url: url, brandId: brandId };
         });
         
-        console.log('Processing URLs:', selectedUrls);
+        console.log('Processing URLs with brand info:', selectedUrls);
         console.log('Settings:', {
             autoReply: this.elements.autoReplyToggle.checked,
             autoClose: this.elements.autoCloseToggle.checked
@@ -2842,6 +3282,25 @@ class PageController {
             this.elements.processingTableBody.innerHTML = '';
         }
         console.log('[Dashboard] Job processing table cleared');
+    }
+
+    // Utility: Generate unique ID
+    generateId() {
+        return 'group-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+    }
+
+    // Utility: Handle modal close with specific cleanup
+    handleModalClose(modal) {
+        modal.style.display = 'none';
+        
+        // Call specific cleanup methods based on modal ID
+        if (modal.id === 'addGroupModal') {
+            this.hideAddGroupModal();
+        } else if (modal.id === 'addUrlModal') {
+            this.hideAddUrlModal();
+        } else if (modal.id === 'uploadCsvModal') {
+            this.hideUploadCsvModal();
+        }
     }
 
     // Utility: Normalize URL for deduplication (removes trailing slash, lowercases, strips query/hash)

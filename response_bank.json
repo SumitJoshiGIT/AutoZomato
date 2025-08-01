@@ -1,5 +1,7 @@
-{
-    "categories": [
+{  
+    "1":{   
+      "name":"Sharief Bhai",   
+      "categories": [
         {
             "id": "1",
             "storyName": "5 Star Comments",
@@ -174,4 +176,177 @@
             ]
         }
     ]
+},
+   
+    "2":{   
+        "name":"Burger Singh",   
+        "categories": [
+            {
+                "id": "1",
+                "storyName": "5 Star Comments",
+                "responses": {
+                    "No Written Review": [
+                        "Hello {CustomerName}, thank you for the amazing rating.",
+                        "We appreciate the 5-stars, {CustomerName}!",
+                        "Thank you for the 5-stars, {CustomerName}!",
+                        "Hi {CustomerName}, thanks for the great rating.",
+                        "5-stars! Thank you very much, {CustomerName}!"
+                    ],
+                    "Written Review": [
+                        "Hi {CustomerName}, thank you so much for taking the time to leave a review. We really appreciate it.",
+                        "Thank you, {CustomerName}. We really appreciate your feedback.",
+                        "Hi {CustomerName}, we always appreciate feedback. Thank you very much.",
+                        "Hi {CustomerName}, your feedback is important to us. Thank you for your feedback."
+                    ]
+                }
+            },
+            {
+                "id": "2",
+                "storyName": "4 Star Comments",
+                "responses": {
+                    "No Written Review": [
+                        "Hi {CustomerName}, thank you so much for taking the time to leave a review. We really appreciate it.",
+                        "Thank you, {CustomerName}. We really appreciate your feedback.",
+                        "Hi {CustomerName}, we always appreciate feedback. Thank you very much.",
+                        "Hi {CustomerName}, your feedback is important to us. Thank you for your feedback."
+                    ],
+                    "Written Review": [
+                        "Hi {CustomerName}, thank you so much for taking the time to leave a review. We really appreciate it.",
+                        "Thank you, {CustomerName}. We really appreciate your feedback.",
+                        "Hi {CustomerName}, we always appreciate feedback. Thank you very much.",
+                        "Hi {CustomerName}, your feedback is important to us. Thank you for your feedback."
+                    ]
+                }
+            },
+            {
+                "id": "3",
+                "storyName": "3 Star Comments",
+                "responses": {
+                    "No Written Review": [
+                        "Thank you, {CustomerName} for taking the time to rate us.",
+                        "Hello {CustomerName}, thank you for the rating. If you'd like to tell us more about your experience, please contact us on 8767121212 or send us email at listen@burgersinghonline.com.",
+                        "Hello {CustomerName}, thanks for the rating. Please contact us on 8767121212 or send us email at listen@burgersinghonline.com and let us know where we can improve.",
+                        "Hi {CustomerName}, thanks for leaving a rating. We would love to know more! Please contact us on 8767121212 or send us email at listen@burgersinghonline.com.",
+                        "Thanks for the rating, {CustomerName}. Let us know more by contacting us on 8767121212 or send us email at listen@burgersinghonline.com."
+                    ],
+                    "Written Review": [
+                        "Hi {CustomerName}, thanks for the feedback. Please contact us on 8767121212 or send us email at listen@burgersinghonline.com so that we can understand more about your experience.",
+                        "Hello {CustomerName}, thanks for your review. We would love to know further detail about what happened, please contact us on 8767121212 or send us email at listen@burgersinghonline.com.",
+                        "Hi {CustomerName}, if you’d like to tell us more about your experience, please contact us on 8767121212 or send us email at listen@burgersinghonline.com."
+                    ]
+                }
+            },
+            {
+                "id": "4",
+                "storyName": "2 Star Comments",
+                "responses": {
+                    "No Written Review": [
+                        "Hello {CustomerName}, we apologise for your experience. Please contact us on 8767121212 or send us email at listen@burgersinghonline.com and share more about your experience so that we can improve.",
+                        "Hello {CustomerName}, we aim to provide superior service and apologise that you did not have the desired experience at {LocationName}. Please contact us on 8767121212 or send us email at listen@burgersinghonline.com and share more about your experience.",
+                        "Hi {CustomerName}, please contact us on 8767121212 or send us email at listen@burgersinghonline.com so that we can understand more about your experience.",
+                        "Hi {CustomerName}, this is not the rating we like to see. Please reach out to us on 8767121212 or send us email at listen@burgersinghonline.com with further details so we can investigate further.",
+                        "Hi {CustomerName}, we apologise for any inconvenience caused. Please contact us on 8767121212 or send us email at listen@burgersinghonline.com and provide more detail in order for us to investigate further."
+                    ],
+                    "Written Review": [
+                        "Hi {CustomerName}, we apologise for the inconvenience caused. Please contact us on 8767121212 or send us email at listen@burgersinghonline.com so that we can look further into the matter.",
+                        "Hello {CustomerName}, so sorry for the inconvenience caused. Please could you get in touch with more details on 8767121212 or send us email at listen@burgersinghonline.com so that we can investigate the matter.",
+                        "Hi {CustomerName}, thank you for bringing this to our attention. We would appreciate it if you could send us further detail on 8767121212 or send us email at listen@burgersinghonline.com so that we can investigate further.",
+                        "Thank you for letting us know, {CustomerName}. Please contact us on 8767121212 or send us email at listen@burgersinghonline.com so that we can resolve this matter."
+                    ]
+                }
+            },
+            {
+                "id": "5",
+                "storyName": "1 Star Comments",
+                "responses": {
+                    "No Written Review": [
+                        "Hello {CustomerName}, we apologise for your experience. Please contact us on 8767121212 or send us email at listen@burgersinghonline.com and share more about your experience so that we can improve.",
+                        "Hello {CustomerName}, we aim to provide superior service and apologise that you did not have the desired experience. Please contact us on 8767121212 or send us email at listen@burgersinghonline.com and share more about your experience.",
+                        "Hi {CustomerName}, please contact us on 8767121212 or send us email at listen@burgersinghonline.com so that we can understand more about your experience.",
+                        "Hi {CustomerName}, this is not the rating we like to see. Please reach out to us on 8767121212 or send us email at listen@burgersinghonline.com with further details so that we can investigate further.",
+                        "Hi {CustomerName}, we apologise for any inconvenience caused. Please contact us on 8767121212 or send us email at listen@burgersinghonline.com and provide more detail in order for us to investigate further."
+                    ],
+                    "Written Review": [
+                        "Hi {CustomerName}, we apologise for the inconvenience caused. Please contact us on 8767121212 or send us email at listen@burgersinghonline.com so that we can look further into the matter.",
+                        "Hello {CustomerName}, so sorry for the inconvenience. Please get in touch with more details on 8767121212 or send us email at listen@burgersinghonline.com so that we can investigate the matter.",
+                        "Hi {CustomerName}, thank you for bringing this to our attention. We would appreciate it if you get in touch with more details on 8767121212 or send us email at listen@burgersinghonline.com so that we can investigate further.",
+                        "Thank you for letting us know, {CustomerName}. Please contact us on 8767121212 or send us email at listen@burgersinghonline.com so that we can resolve this matter."
+                    ]
+                }
+            }
+        ],
+        "complaints": [
+            {
+                "id": "1",
+                "storyName": "Incorrect Orders Received",
+                "responses": [
+                    "Hi CustomerName, we apologize for the inconvenience caused. Please reach out to us directly with your order details on 8767121212 or send us an email at customer.support@burgersinghonline.com so we can make it right for you. Your satisfaction is our top priority.",
+                    "Dear CustomerName, we apologize for the inconvenience caused by the incorrect order. Please reach out to us on 8767121212 or send us an email at customer.support@burgersinghonline.com and we will ensure to rectify this immediately. Your satisfaction is our top priority."
+                ]
+            },
+            {
+                "id": "2",
+                "storyName": "Delivery Delays by Zomato",
+                "responses": [
+                    "Hi CustomerName, we are sorry to hear about the delay with your order. We will communicate with Zomato to address these concerns and provide a better experience next time.",
+                    "Hi CustomerName, we regret the delay caused by Zomato. We are coordinating with them to enhance the delivery experience. Thank you for bringing this to our attention."
+                ]
+            },
+            {
+                "id": "3",
+                "storyName": "Spill Packaging Issues",
+                "responses": [
+                    "Hi CustomerName, we regret the inconvenience caused by the spill packaging. We are working to improve our packaging to prevent such issues in the future. Thank you for bringing this to our attention.",
+                    "Dear CustomerName, we are sorry to hear about the spilled packaging. We are taking steps to improve our packaging standards. Please contact us on 8767121212 or send us an email at customer.support@burgersinghonline.com so we can make it right for you."
+                ]
+            },
+            {
+                "id": "4",
+                "storyName": "Cooking Instructions Not Followed",
+                "responses": [
+                    "Hi CustomerName, we apologize for not following your cooking instructions. Your feedback is valuable, and we will ensure that our team pays closer attention to special requests moving forward.",
+                    "Dear CustomerName, we apologize for not following your cooking instructions. We value your feedback and will ensure our team adheres to special requests in the future. Kindly reach out to us on 8767121212 or send us an email at customer.support@burgersinghonline.com for a resolution."
+                ]
+            },
+            {
+                "id": "5",
+                "storyName": "Zomato Delivery-Related Issues",
+                "responses": [
+                    "Hi CustomerName, we are sorry for the issues you faced with the delivery. We will communicate with Zomato to address these concerns and provide a better experience next time.",
+                    "Hi [Customer's Name], we apologize for any issues caused by Zomato's delivery service. We are in communication with them to enhance the delivery experience. Thank you for bringing this to our attention."
+                ]
+            },
+            {
+                "id": "6",
+                "storyName": "Missing Cutlery",
+                "responses": [
+                    "Hi CustomerName, we apologize for the missing items in your order. Please contact us on 8767121212 or send us an email at customer.support@burgersinghonline.com for a resolution.",
+                    "Hello {Customer Name}, our apologies for the missing cutlery. We understand the importance of a complete order. Immediate steps have been taken to address this and to avoid any future occurrences."
+                ]
+            },
+            {
+                "id": "7",
+                "storyName": "Rude Staff",
+                "responses": [
+                    "Hi [Customer's Name], we regret to hear about your experience with our staff. This is not reflective of our service standards. Please reach out to us directly with your order details on 8767121212 or send us an email at customer.support@burgersinghonline.com so we can make it right for you. Your satisfaction is our top priority.",
+                    "Dear [Customer's Name], we are sorry for the negative experience with our staff. Please reach out to us on 8767121212 or send us an email at customer.support@burgersinghonline.com so we can resolve this on priority."
+                ]
+            },
+            {
+                "id": "8",
+                "storyName": "Missing Item in Order",
+                "responses": [
+                    "Hi CustomerName, we apologize for the missing Item in your order. Please contact us on 8767121212 or send us an email at customer.support@burgersinghonline.com for a resolution."
+                ]
+            },
+            {
+                "id": "9",
+                "storyName": "Food Safety – Foreign Materials",
+                "responses": [
+                    "Hi {CustomerName}, Thank you for bringing this to our attention. We deeply regret the incident and take such matters very seriously. We maintain strict hygiene standards, and this occurrence is highly unusual. Please contact us on 8767121212 or send us an email at customer.support@burgersinghonline.com so we can investigate this further and make it right. Your feedback is crucial in helping us improve.",
+                    "Hi {CustomerName}, Thank you for bringing this to our attention. We deeply regret the incident and take such matters very seriously. We maintain strict hygiene standards and this occurrence is highly unusual. We want to make this right for you. To assist us in thoroughly investigating the issue and resolving it for you, please send us an email at listen@burgersinghonline.com with your order details, including the invoice. Please share your contact information as we would love the opportunity to connect with you and ensure this is addressed swiftly. Your feedback is invaluable in helping us improve and this information will enable us to investigate the matter further and take appropriate actions. We are committed to resolving this for you. We apologize once again for any inconvenience caused and appreciate your understanding."
+                ]
+            }
+        ]
+}
 }

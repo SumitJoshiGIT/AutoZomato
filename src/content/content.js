@@ -242,9 +242,15 @@ if (typeof complaintMappings === 'undefined') {
 // Legacy variables have been replaced by ReviewManager
 // No need for global autoReplyQueue, autoReplyProcessorRunning, and autoReplyProcessorStopped variables
 
-// Load complaint mappings from response bank
-async function loadComplaintMappings() {
+// Load complaint mappings from response bank for specific brand
+async function loadComplaintMappings(brandId = null) {
+    // Use brandId if provided, otherwise try to get it from global variable
+    const targetBrandId = brandId || window.autoZomatoBrandId || '1'; // Default to brand 1
+    
+    console.log(`[AutoZomato] Loading complaint mappings for brand: ${targetBrandId}`);
+    
     if (complaintMappings.size > 0) {
+        console.log('[AutoZomato] Complaint mappings already loaded, skipping...');
         return; // Already loaded
     }
     
@@ -252,9 +258,18 @@ async function loadComplaintMappings() {
         const response = await fetch(chrome.runtime.getURL('response_bank.json'));
         const data = await response.json();
         
-        // Load categories (star-based responses)
-        if (data.categories) {
-            data.categories.forEach(category => {
+        // Get brand-specific data
+        const brandData = data[targetBrandId];
+        if (!brandData) {
+            console.warn(`[AutoZomato] Brand ${targetBrandId} not found in response bank, using fallback`);
+            throw new Error(`Brand ${targetBrandId} not found`);
+        }
+        
+        console.log(`[AutoZomato] Found brand data for ${targetBrandId}:`, brandData.name);
+        
+        // Load categories (star-based responses) for this brand
+        if (brandData.categories) {
+            brandData.categories.forEach(category => {
                 complaintMappings.set(category.id, {
                     name: category.storyName,
                     type: 'category',
@@ -263,9 +278,9 @@ async function loadComplaintMappings() {
             });
         }
         
-        // Load complaints (specific issues)
-        if (data.complaints) {
-            data.complaints.forEach(complaint => {
+        // Load complaints (specific issues) for this brand
+        if (brandData.complaints) {
+            brandData.complaints.forEach(complaint => {
                 complaintMappings.set(complaint.id, {
                     name: complaint.storyName,
                     type: 'complaint',
@@ -274,9 +289,9 @@ async function loadComplaintMappings() {
             });
         }
         
-        console.log('[AutoZomato] Loaded complaint mappings:', complaintMappings.size, 'entries');
+        console.log(`[AutoZomato] Loaded complaint mappings for brand ${targetBrandId} (${brandData.name}):`, complaintMappings.size, 'entries');
     } catch (error) {
-        console.error('[AutoZomato] Failed to load complaint mappings:', error);
+        console.error(`[AutoZomato] Failed to load complaint mappings for brand ${targetBrandId}:`, error);
         // Add fallback mappings
         complaintMappings.set('1', { name: '5 Star Comments', type: 'category' });
         complaintMappings.set('2', { name: '4 Star Comments', type: 'category' });
@@ -1770,7 +1785,22 @@ async function replyToReviews(reviews, promptContext, onReplySuccess) {
     // Load the response bank from the extension's files
     const responseBankUrl = chrome.runtime.getURL('response_bank.json');
     const response = await fetch(responseBankUrl);
-    const responseBank = await response.json();
+    const allResponseBank = await response.json();
+    
+    // Get brand-specific response bank
+    const brandId = window.autoZomatoBrandId || '1'; // Default to brand 1
+    const responseBank = allResponseBank[brandId];
+    
+    if (!responseBank) {
+        console.warn(`[AutoZomato] Brand ${brandId} not found in response bank, using first available brand`);
+        const firstBrandId = Object.keys(allResponseBank)[0];
+        const fallbackResponseBank = allResponseBank[firstBrandId];
+        console.log(`[AutoZomato] Using brand ${firstBrandId} (${fallbackResponseBank?.name}) as fallback`);
+        // Use fallback but still call it responseBank for compatibility
+        responseBank = fallbackResponseBank;
+    } else {
+        console.log(`[AutoZomato] Using response bank for brand ${brandId} (${responseBank.name})`);
+    }
 
     // Filter out reviews that have already been processed using ReviewManager
     const processedReviewIds = Array.from(reviewManager.reviews.keys());
@@ -2216,7 +2246,7 @@ async function generateReplyFromComplaint(review, complaintId) {
     try {
         // Load response bank if not already loaded
         if (complaintMappings.size === 0) {
-            await loadComplaintMappings();
+            await loadComplaintMappings(window.autoZomatoBrandId);
         }
         
         const mapping = complaintMappings.get(complaintId);
@@ -2475,7 +2505,20 @@ async function processReviewWithGPTMode(review, config, onReplySuccess) {
         // Load the response bank from the extension's files for reply generation
         const responseBankUrl = chrome.runtime.getURL('response_bank.json');
         const response = await fetch(responseBankUrl);
-        const responseBank = await response.json();
+        const allResponseBank = await response.json();
+        
+        // Get brand-specific response bank
+        const brandId = window.autoZomatoBrandId || '1'; // Default to brand 1
+        let responseBank = allResponseBank[brandId];
+        
+        if (!responseBank) {
+            console.warn(`[AutoZomato] Brand ${brandId} not found in response bank, using first available brand`);
+            const firstBrandId = Object.keys(allResponseBank)[0];
+            responseBank = allResponseBank[firstBrandId];
+            console.log(`[AutoZomato] Using brand ${firstBrandId} (${responseBank?.name}) as fallback`);
+        } else {
+            console.log(`[AutoZomato] Using response bank for brand ${brandId} (${responseBank.name})`);
+        }
         
         // Step 2: Generate reply using response bank (same logic as Ollama mode)
         let replyTemplate = '';
@@ -2615,33 +2658,43 @@ async function processReviewWithOfflineMode(review, config, responseBank, onRepl
         
         if (complaintId && complaintId !== 'None') {
             // Use complaint-specific template
-            const complaintTemplates = responseBank.complaints[complaintId];
-            if (complaintTemplates && complaintTemplates.length > 0) {
-                const randomTemplate = complaintTemplates[Math.floor(Math.random() * complaintTemplates.length)];
-                replyTemplate = randomTemplate.template;
-                selectedCategory = `Complaint: ${complaintId}`;
-            }
-        } else if (sentiment === 'Positive') {
-            // Use positive response template
-            const positiveTemplates = responseBank.positive;
-            if (positiveTemplates && positiveTemplates.length > 0) {
-                const randomTemplate = positiveTemplates[Math.floor(Math.random() * positiveTemplates.length)];
-                replyTemplate = randomTemplate.template;
-                selectedCategory = 'Positive Response';
+            const complaint = responseBank.complaints?.find(c => c.id === complaintId);
+            if (complaint && complaint.responses && complaint.responses.length > 0) {
+                const randomTemplate = complaint.responses[Math.floor(Math.random() * complaint.responses.length)];
+                replyTemplate = randomTemplate;
+                selectedCategory = `Complaint: ${complaint.storyName}`;
             }
         } else {
-            // Use neutral template
-            const neutralTemplates = responseBank.neutral;
-            if (neutralTemplates && neutralTemplates.length > 0) {
-                const randomTemplate = neutralTemplates[Math.floor(Math.random() * neutralTemplates.length)];
-                replyTemplate = randomTemplate.template;
-                selectedCategory = 'Neutral Response';
+            // Use rating-based response from categories
+            const rating = review.rating ? Math.floor(review.rating) : 5; // Default to 5 stars if no rating
+            const category = responseBank.categories?.find(c => c.id === rating.toString());
+            
+            if (category && category.responses) {
+                // Choose between "Written Review" and "No Written Review" based on review text
+                const hasReviewText = review.reviewText && review.reviewText.trim().length > 0;
+                const responseType = hasReviewText ? "Written Review" : "No Written Review";
+                const responses = category.responses[responseType];
+                
+                if (responses && responses.length > 0) {
+                    const randomTemplate = responses[Math.floor(Math.random() * responses.length)];
+                    replyTemplate = randomTemplate;
+                    selectedCategory = `${rating} Star: ${category.storyName}`;
+                }
             }
         }
         
-        // Step 5: Personalize the reply
-        const personalizedReply = replyTemplate.replace(/\{firstName\}/g, firstName);
-        const finalReply = personalizedReply || `Thank you for your feedback, ${firstName}! We appreciate your time and will continue to improve our service.`;
+        // Step 5: Personalize the reply with proper placeholders
+        let personalizedReply = replyTemplate || `Thank you for your feedback, ${firstName}! We appreciate your time and will continue to improve our service.`;
+        
+        // Replace both {CustomerName} and {firstName} placeholders
+        personalizedReply = personalizedReply.replace(/\{CustomerName\}/g, firstName);
+        personalizedReply = personalizedReply.replace(/\{firstName\}/g, firstName);
+        
+        // Replace {LocationName} with restaurant name
+        const restaurantName = window.AutoZomatoReviewManager.processingState.currentRestaurantName || 'our restaurant';
+        personalizedReply = personalizedReply.replace(/\{LocationName\}/g, restaurantName);
+        
+        const finalReply = personalizedReply;
         
         // Step 6: Fill in the reply field
         const replyField = review.replyTextarea;
@@ -3208,7 +3261,7 @@ async function renderLogPopupContent() {
     if (!popup) return;
     
     // Load complaint mappings before rendering
-    await loadComplaintMappings();
+    await loadComplaintMappings(window.autoZomatoBrandId);
 
     // Clear existing table content to prevent duplication
     let table = popup.querySelector('table');
@@ -3470,6 +3523,23 @@ function showLogPopup() {
     header.insertBefore(selectAllBtn, header.firstChild);
     header.insertBefore(replyAllBtn, header.firstChild);
 
+    // Create fullscreen button
+    const fullscreenBtn = document.createElement('button');
+    fullscreenBtn.innerHTML = '⛶';
+    fullscreenBtn.title = 'Toggle Fullscreen';
+    fullscreenBtn.style.cssText = `
+        background: #6b46c1;
+        color: white;
+        border: none;
+        font-size: 14px;
+        font-weight: bold;
+        padding: 4px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+        margin-right: 10px;
+    `;
+    fullscreenBtn.onclick = () => toggleFullscreen(popup);
+
     // Create close button
     const closeBtn = document.createElement('button');
     closeBtn.innerHTML = '&times;';
@@ -3481,10 +3551,39 @@ function showLogPopup() {
         padding: 0 5px;
     `;
     closeBtn.onclick = () => popup.remove();
+    
+    header.appendChild(fullscreenBtn);
     header.appendChild(closeBtn);
 
     popup.appendChild(header);
     document.body.appendChild(popup);
+
+    // Add keyboard shortcuts for the popup
+    const handleKeydown = (e) => {
+        if (e.target.closest('#autozomato-log-popup')) {
+            if (e.key === 'Escape') {
+                if (popup.classList.contains('fullscreen')) {
+                    toggleFullscreen(popup);
+                } else {
+                    popup.remove();
+                    document.removeEventListener('keydown', handleKeydown);
+                }
+                e.preventDefault();
+            } else if (e.key === 'F11' || (e.key === 'f' && e.ctrlKey)) {
+                toggleFullscreen(popup);
+                e.preventDefault();
+            }
+        }
+    };
+    
+    document.addEventListener('keydown', handleKeydown);
+    
+    // Remove event listener when popup is removed
+    const originalRemove = popup.remove;
+    popup.remove = function() {
+        document.removeEventListener('keydown', handleKeydown);
+        originalRemove.call(this);
+    };
 
     // Initial render of the content
     renderLogPopupContent().catch(console.error);
@@ -3509,6 +3608,78 @@ function handleSelectAll() {
     // Update button text
     selectAllBtn.innerHTML = isSelectingAll ? 'Deselect All' : 'Select All';
     selectAllBtn.style.background = isSelectingAll ? '#e53e3e' : '#48bb78';
+}
+
+function toggleFullscreen(popup) {
+    const isFullscreen = popup.classList.contains('fullscreen');
+    
+    if (isFullscreen) {
+        // Exit fullscreen
+        popup.classList.remove('fullscreen');
+        popup.style.cssText = `
+            position: fixed;
+            top: 35px;
+            right: 10px;
+            width: 600px;
+            max-height: 500px;
+            background: white;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            z-index: 10001;
+            font-family: Arial, sans-serif;
+            font-size: 12px;
+            color: #333;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        `;
+        
+        // Update button icon
+        const fullscreenBtn = popup.querySelector('button[title="Toggle Fullscreen"]');
+        if (fullscreenBtn) {
+            fullscreenBtn.innerHTML = '⛶';
+            fullscreenBtn.title = 'Toggle Fullscreen';
+        }
+    } else {
+        // Enter fullscreen
+        popup.classList.add('fullscreen');
+        popup.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: white;
+            border: none;
+            border-radius: 0;
+            box-shadow: none;
+            z-index: 10001;
+            font-family: Arial, sans-serif;
+            font-size: 12px;
+            color: #333;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        `;
+        
+        // Update button icon
+        const fullscreenBtn = popup.querySelector('button[title="Toggle Fullscreen"]');
+        if (fullscreenBtn) {
+            fullscreenBtn.innerHTML = '⛶';
+            fullscreenBtn.title = 'Exit Fullscreen';
+        }
+    }
+    
+    // Ensure table adjusts to new container size
+    const table = popup.querySelector('table');
+    if (table && isFullscreen) {
+        // In normal mode, restore original table width
+        table.style.width = '100%';
+    } else if (table && !isFullscreen) {
+        // In fullscreen mode, make table take full advantage of space
+        table.style.width = '100%';
+    }
 }
 
 async function handleReplyToAll() {

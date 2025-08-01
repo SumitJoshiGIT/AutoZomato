@@ -313,12 +313,17 @@ class AutoZomatoBackground {
         this.tabToJobMap.clear();
         
         // Create process jobs for each URL
-        this.config.urls.forEach((url, index) => {
+        this.config.urls.forEach((urlData, index) => {
             const jobId = `job_${++this.processJobCounter}`;
+            
+            // Handle both old format (string) and new format (object with url and brandId)
+            const url = typeof urlData === 'string' ? urlData : urlData.url;
+            const brandId = typeof urlData === 'object' ? urlData.brandId : null;
             
             const processJob = {
                 id: jobId,
                 url: url,
+                brandId: brandId,
                 index: index,
                 status: 'queued',
                 tabId: null,
@@ -330,13 +335,14 @@ class AutoZomatoBackground {
             };
             
             this.processQueue.push(processJob);
-            console.log(`[Background] Created job ${jobId} for URL: ${url}`);
+            console.log(`[Background] Created job ${jobId} for URL: ${url} (Brand: ${brandId})`);
             
             // Add to job statuses immediately so UI can show queued items
             this.jobStatuses.set(jobId, {
                 jobId: jobId,
                 tabId: null,
                 url: url,
+                brandId: brandId,
                 status: 'queued',
                 restaurantName: null,
                 progress: null,
@@ -397,7 +403,14 @@ class AutoZomatoBackground {
         // Find next queued job
         const nextJob = this.processQueue.find(job => job.status === 'queued');
         if (!nextJob) {
-            // No more jobs in queue, processing complete
+            // Check if there are any jobs still processing
+            const processingJobs = this.processQueue.filter(job => job.status === 'processing');
+            if (processingJobs.length > 0) {
+                console.log(`[Background] No queued jobs, but ${processingJobs.length} jobs still processing. Waiting...`);
+                return; // Don't complete yet, jobs are still running
+            }
+            
+            // No more jobs in queue and none processing, processing complete
             this.addLog(`All ${this.processQueue.length} URLs processed, completing...`);
             this.completeProcessing();
             return;
@@ -467,10 +480,11 @@ class AutoZomatoBackground {
                     // Then, inject the config and job ID into the page, and trigger processing
                     await chrome.scripting.executeScript({
                         target: { tabId: tab.id },
-                        func: (config, jobId) => {
+                        func: (config, jobId, brandId) => {
                             window.autoZomatoConfig = config;
                             window.autoZomatoJobId = jobId;
-                            console.log('[AutoZomato Background] Config and job ID injected:', { config, jobId });
+                            window.autoZomatoBrandId = brandId;
+                            console.log('[AutoZomato Background] Config, job ID, and brand ID injected:', { config, jobId, brandId });
                             
                             // Now, if startProcessing is available, call it.
                             if (typeof window.startProcessing === 'function') {
@@ -480,7 +494,7 @@ class AutoZomatoBackground {
                                 console.error('[AutoZomato Background] window.startProcessing is not defined on the page.');
                             }
                         },
-                        args: [this.config, job.id] // Pass config and job ID
+                        args: [this.config, job.id, job.brandId] // Pass config, job ID, and brand ID
                     });
                     
                     console.log(`[Background] Script injected and triggered successfully into tab ${tab.id} for job ${job.id}`);
