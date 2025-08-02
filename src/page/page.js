@@ -22,7 +22,7 @@ class PageController {
         this.initializeElements();
         this.bindEvents();
         this.setupMessageListener();
-        this.loadAvailableBrands();
+        this.initializeBrandGroups();
         this.loadStateOnStartup();
     }
 
@@ -62,7 +62,7 @@ class PageController {
             groupsList: document.getElementById('groupsList'),
             selectAllGroups: document.getElementById('selectAllGroups'),
             deselectAllGroups: document.getElementById('deselectAllGroups'),
-            addGroupBtn: document.getElementById('addGroupBtn'),
+            refreshGroupsBtn: document.getElementById('refreshGroupsBtn'),
             
             // URL Management
             urlsByGroupContainer: document.getElementById('urlsByGroupContainer'),
@@ -89,18 +89,14 @@ class PageController {
             reviewResultsContainer: document.getElementById('reviewResultsContainer'),
             
             // Modals
-            addGroupModal: document.getElementById('addGroupModal'),
             addUrlModal: document.getElementById('addUrlModal'),
             uploadCsvModal: document.getElementById('uploadCsvModal'),
-            groupName: document.getElementById('groupName'),
-            groupBrand: document.getElementById('groupBrand'),
             urlInput: document.getElementById('urlInput'),
             urlGroup: document.getElementById('urlGroup'),
             csvFile: document.getElementById('csvFile'),
+            csvBrandSelect: document.getElementById('csvBrandSelect'),
             csvPreview: document.getElementById('csvPreview'),
             csvPreviewContent: document.getElementById('csvPreviewContent'),
-            saveGroupBtn: document.getElementById('saveGroupBtn'),
-            cancelGroupBtn: document.getElementById('cancelGroupBtn'),
             saveUrlBtn: document.getElementById('saveUrlBtn'),
             cancelUrlBtn: document.getElementById('cancelUrlBtn'),
             uploadCsvConfirmBtn: document.getElementById('uploadCsvConfirmBtn'),
@@ -149,11 +145,9 @@ class PageController {
         this.elements.endDate.addEventListener('change', () => this.saveDateSettings());
         
         // Group Management
-        this.elements.addGroupBtn.addEventListener('click', () => this.showAddGroupModal());
+        this.elements.refreshGroupsBtn.addEventListener('click', () => this.initializeBrandGroups());
         this.elements.selectAllGroups.addEventListener('click', () => this.selectAllGroups());
         this.elements.deselectAllGroups.addEventListener('click', () => this.deselectAllGroups());
-        this.elements.saveGroupBtn.addEventListener('click', () => this.saveNewGroup());
-        this.elements.cancelGroupBtn.addEventListener('click', () => this.hideAddGroupModal());
         
         // URL Management
         this.elements.addUrlBtn.addEventListener('click', () => this.showAddUrlModal());
@@ -428,7 +422,7 @@ class PageController {
         if (this.groups.length === 0) {
             this.elements.groupsList.innerHTML = `
                 <div class="empty-state">
-                    <p>No groups created yet. Click "Add New Group" to get started.</p>
+                    <p>No brand groups available. Click "Refresh Groups" to load brands from response bank.</p>
                 </div>
             `;
             return;
@@ -437,7 +431,7 @@ class PageController {
         this.elements.groupsList.innerHTML = this.groups.map(group => {
             const isSelected = this.selectedGroups.has(group.id);
             const urlCount = group.urls ? group.urls.length : 0;
-            const brandInfo = group.brandId ? `(Brand: ${this.getBrandName(group.brandId)})` : '';
+            const isPermanent = group.isPermanent || false;
             
             return `
                 <div class="group-item ${isSelected ? 'selected' : ''}">
@@ -445,15 +439,19 @@ class PageController {
                         <label class="group-checkbox">
                             <input type="checkbox" ${isSelected ? 'checked' : ''} 
                                    data-group-id="${group.id}" class="group-checkbox-input">
-                            <span>${group.name} ${brandInfo}</span>
+                            <span>${group.name}</span>
                         </label>
                         <div class="group-actions">
-                            <button class="btn btn-small btn-secondary edit-group-btn" data-group-id="${group.id}">
-                                Edit
-                            </button>
-                            <button class="btn btn-small btn-danger delete-group-btn" data-group-id="${group.id}">
-                                Delete
-                            </button>
+                            ${!isPermanent ? `
+                                <button class="btn btn-small btn-secondary edit-group-btn" data-group-id="${group.id}">
+                                    Edit
+                                </button>
+                                <button class="btn btn-small btn-danger delete-group-btn" data-group-id="${group.id}">
+                                    Delete
+                                </button>
+                            ` : `
+                                <span class="brand-badge">Brand Group</span>
+                            `}
                         </div>
                     </div>
                     <div class="group-urls">
@@ -490,18 +488,6 @@ class PageController {
             console.log('[PageController] Groups migrated for brand support, saving data...');
             this.saveData();
         }
-    }
-
-    getBrandName(brandId) {
-        // This will be populated when we load the brands
-        const brandSelect = this.elements.groupBrand;
-        if (brandSelect) {
-            const option = brandSelect.querySelector(`option[value="${brandId}"]`);
-            if (option) {
-                return option.textContent;
-            }
-        }
-        return `ID: ${brandId}`;
     }
 
     renderUrlsByGroup() {
@@ -677,84 +663,116 @@ class PageController {
         });
     }
 
-    // Group Management Methods
+    // Brand and Group Management Methods
+    async initializeBrandGroups() {
+        try {
+            const response = await fetch(chrome.runtime.getURL('response_bank.json'));
+            const responseBank = await response.json();
+            
+            console.log('[PageController] Initializing brand groups from response bank:', Object.keys(responseBank));
+            
+            // Create groups for each brand
+            const newGroups = [];
+            Object.keys(responseBank).forEach(brandId => {
+                const brand = responseBank[brandId];
+                if (brand && brand.name) {
+                    // Check if group already exists for this brand
+                    let existingGroup = this.groups.find(g => g.brandId === brandId);
+                    
+                    if (!existingGroup) {
+                        // Create new group for this brand
+                        existingGroup = {
+                            id: `brand_${brandId}`,
+                            name: brand.name,
+                            brandId: brandId,
+                            urls: [],
+                            isPermanent: true // Mark as permanent so it can't be deleted
+                        };
+                    } else {
+                        // Update name if brand name changed
+                        existingGroup.name = brand.name;
+                        existingGroup.isPermanent = true;
+                    }
+                    
+                    newGroups.push(existingGroup);
+                }
+            });
+            
+            // Remove any groups that don't have corresponding brands (cleanup)
+            this.groups = this.groups.filter(group => {
+                if (group.isPermanent) {
+                    return responseBank[group.brandId] !== undefined;
+                }
+                return true; // Keep non-permanent groups for backward compatibility
+            });
+            
+            // Add new brand groups
+            newGroups.forEach(newGroup => {
+                const existingIndex = this.groups.findIndex(g => g.id === newGroup.id);
+                if (existingIndex >= 0) {
+                    // Update existing group
+                    this.groups[existingIndex] = { ...this.groups[existingIndex], ...newGroup };
+                } else {
+                    // Add new group
+                    this.groups.push(newGroup);
+                }
+            });
+            
+            // Populate CSV brand selection dropdown
+            this.populateCsvBrandSelect(responseBank);
+            
+            await this.saveData();
+            this.render();
+            
+            console.log('[PageController] Brand groups initialized:', this.groups.map(g => ({ name: g.name, brandId: g.brandId, urlCount: g.urls?.length || 0 })));
+            
+        } catch (error) {
+            console.error('[PageController] Failed to initialize brand groups:', error);
+            // Show error message to user
+            if (this.elements.groupsList) {
+                this.elements.groupsList.innerHTML = `
+                    <div class="error-state">
+                        <p>Error loading brands: ${error.message}</p>
+                        <button class="btn btn-primary" onclick="location.reload()">Reload Page</button>
+                    </div>
+                `;
+            }
+        }
+    }
+
+    async populateCsvBrandSelect(responseBank) {
+        if (!this.elements.csvBrandSelect) return;
+        
+        // Clear existing options
+        this.elements.csvBrandSelect.innerHTML = '<option value="">Select a brand...</option>';
+        
+        // Populate brand options
+        Object.keys(responseBank).forEach(brandId => {
+            const brand = responseBank[brandId];
+            if (brand && brand.name) {
+                const option = document.createElement('option');
+                option.value = brandId;
+                option.textContent = brand.name;
+                this.elements.csvBrandSelect.appendChild(option);
+            }
+        });
+    }
+
     async loadAvailableBrands() {
         try {
             const response = await fetch(chrome.runtime.getURL('response_bank.json'));
             const responseBank = await response.json();
             
-            // Clear existing options
-            this.elements.groupBrand.innerHTML = '<option value="">Select a brand...</option>';
-            
-            // Populate brand options
-            Object.keys(responseBank).forEach(brandId => {
-                const brand = responseBank[brandId];
-                if (brand && brand.name) {
-                    const option = document.createElement('option');
-                    option.value = brandId;
-                    option.textContent = brand.name;
-                    this.elements.groupBrand.appendChild(option);
-                }
-            });
-            
-            console.log('[PageController] Loaded brands for group selection:', Object.keys(responseBank));
+            console.log('[PageController] Loaded brands for validation:', Object.keys(responseBank));
             return responseBank; // Return the response bank data
         } catch (error) {
             console.error('[PageController] Failed to load brands:', error);
-            // Add fallback option
-            const fallbackOption = document.createElement('option');
-            fallbackOption.value = '1';
-            fallbackOption.textContent = 'Default Brand';
-            this.elements.groupBrand.appendChild(fallbackOption);
             
             // Return a fallback response bank
             return {
                 '1': { name: 'Default Brand', categories: {}, complaints: {} }
             };
         }
-    }
-
-    showAddGroupModal() {
-        this.elements.addGroupModal.style.display = 'flex';
-        this.elements.groupName.focus();
-    }
-
-    hideAddGroupModal() {
-        this.elements.addGroupModal.style.display = 'none';
-        this.elements.groupName.value = '';
-        this.elements.groupBrand.value = '';
-    }
-
-    async saveNewGroup() {
-        const name = this.elements.groupName.value.trim();
-        const brandId = this.elements.groupBrand.value;
-        
-        if (!name) {
-            alert('Please enter a group name');
-            return;
-        }
-        
-        if (!brandId) {
-            alert('Please select a brand for this group');
-            return;
-        }
-        
-        if (this.groups.some(g => g.name === name)) {
-            alert('A group with this name already exists');
-            return;
-        }
-        
-        const newGroup = {
-            id: Date.now().toString(),
-            name: name,
-            brandId: brandId,
-            urls: []
-        };
-        
-        this.groups.push(newGroup);
-        await this.saveData();
-        this.hideAddGroupModal();
-        this.render();
     }
 
     toggleGroupSelection(groupId) {
@@ -955,6 +973,7 @@ class PageController {
     showUploadCsvModal() {
         this.elements.uploadCsvModal.style.display = 'flex';
         this.elements.csvFile.value = '';
+        this.elements.csvBrandSelect.value = '';
         this.elements.csvPreview.style.display = 'none';
         this.elements.uploadCsvConfirmBtn.disabled = true;
         this.csvData = null;
@@ -963,6 +982,7 @@ class PageController {
     hideUploadCsvModal() {
         this.elements.uploadCsvModal.style.display = 'none';
         this.elements.csvFile.value = '';
+        this.elements.csvBrandSelect.value = '';
         this.elements.csvPreview.style.display = 'none';
         this.elements.uploadCsvConfirmBtn.disabled = true;
         this.csvData = null;
@@ -984,7 +1004,7 @@ class PageController {
         try {
             const text = await this.readFileAsText(file);
             const parsedData = this.parseCsvData(text);
-            await this.validateCsvData(parsedData);
+            this.validateCsvData(parsedData);
             this.displayCsvPreview(parsedData);
             this.elements.uploadCsvConfirmBtn.disabled = false;
         } catch (error) {
@@ -1014,7 +1034,7 @@ class PageController {
         const rows = [];
         for (let line of lines) {
             const row = this.parseCsvLine(line);
-            if (row.length > 0) {
+            if (row.length > 0 && row[0].trim()) {
                 rows.push(row);
             }
         }
@@ -1023,10 +1043,10 @@ class PageController {
             throw new Error('No valid data found in CSV file');
         }
 
-        // Check if first row is a header (contains 'group', 'brand', 'url' keywords)
+        // Check if first row is a header (contains 'url' keyword)
         const firstRow = rows[0].map(cell => cell.toLowerCase());
         const hasHeader = firstRow.some(cell => 
-            cell.includes('group') || cell.includes('brand') || cell.includes('url')
+            cell.includes('url') || cell.includes('link') || cell.includes('address')
         );
 
         const dataRows = hasHeader ? rows.slice(1) : rows;
@@ -1035,29 +1055,32 @@ class PageController {
         dataRows.forEach((row, index) => {
             const rowNumber = hasHeader ? index + 2 : index + 1;
             
-            if (row.length < 3) {
-                // Pad with empty strings if not enough columns
-                while (row.length < 3) {
-                    row.push('');
-                }
+            // Take first column as URL
+            const url = row[0] ? row[0].trim() : '';
+            
+            if (!url) {
+                console.warn(`Row ${rowNumber}: Empty URL, skipping`);
+                return;
             }
 
-            const [groupName, brandId, url] = row.map(cell => cell.trim());
-            
             processedData.push({
                 rowNumber,
-                groupName,
-                brandId,
                 url,
-                status: 'pending',
-                message: ''
+                status: 'valid'
             });
         });
 
-        return {
+        if (processedData.length === 0) {
+            throw new Error('No valid URLs found in CSV file');
+        }
+
+        this.csvData = {
             hasHeader,
+            totalRows: dataRows.length,
             data: processedData
         };
+
+        return this.csvData;
     }
 
     parseCsvLine(line) {
@@ -1082,67 +1105,32 @@ class PageController {
         return result.map(cell => cell.replace(/^"|"$/g, '').trim());
     }
 
-    async validateCsvData(parsedData) {
-        // Load available brands for validation
-        const availableBrands = await this.loadAvailableBrands();
-        
-        if (!availableBrands || typeof availableBrands !== 'object') {
-            throw new Error('Failed to load brand data for validation');
-        }
-        
-        const brandIds = Object.keys(availableBrands);
-
+    validateCsvData(parsedData) {
+        // Simple validation for URLs only
         parsedData.data.forEach(row => {
-            // Skip if brand ID is empty (as per requirements)
-            if (!row.brandId) {
-                row.status = 'skip';
-                row.message = 'No brand ID provided - will be skipped';
-                return;
-            }
-
-            // Validate brand ID exists
-            if (!brandIds.includes(row.brandId)) {
-                row.status = 'error';
-                row.message = `Brand ID "${row.brandId}" not found in response bank`;
-                return;
-            }
-
             // Validate URL format
             try {
                 new URL(row.url);
+                row.status = 'valid';
+                row.message = 'Valid URL';
             } catch (e) {
                 row.status = 'error';
                 row.message = 'Invalid URL format';
-                return;
             }
-
-            // Check if group name is empty
-            if (!row.groupName) {
-                row.status = 'warning';
-                row.message = `Will create new group for brand "${availableBrands[row.brandId].name}"`;
-                return;
-            }
-
-            row.status = 'success';
-            row.message = `Will add to group "${row.groupName}"`;
         });
 
         this.csvData = parsedData;
     }
 
     displayCsvPreview(parsedData) {
-        const validRows = parsedData.data.filter(row => row.status !== 'skip');
-        const successCount = validRows.filter(row => row.status === 'success').length;
-        const errorCount = validRows.filter(row => row.status === 'error').length;
-        const warningCount = validRows.filter(row => row.status === 'warning').length;
+        const validCount = parsedData.data.filter(row => row.status === 'valid').length;
+        const errorCount = parsedData.data.filter(row => row.status === 'error').length;
 
         let html = `
             <table>
                 <thead>
                     <tr>
                         <th>Row</th>
-                        <th>Group Name</th>
-                        <th>Brand ID</th>
                         <th>URL</th>
                         <th>Status</th>
                     </tr>
@@ -1153,15 +1141,12 @@ class PageController {
         // Show first 10 rows for preview
         const previewRows = parsedData.data.slice(0, 10);
         previewRows.forEach(row => {
-            const rowClass = row.status === 'error' ? 'error-row' : 
-                           row.status === 'warning' ? 'warning-row' : '';
+            const rowClass = row.status === 'error' ? 'error-row' : '';
             
             html += `
                 <tr class="${rowClass}">
                     <td>${row.rowNumber}</td>
-                    <td>${row.groupName || '<empty>'}</td>
-                    <td>${row.brandId || '<empty>'}</td>
-                    <td>${row.url.length > 40 ? row.url.substring(0, 40) + '...' : row.url}</td>
+                    <td>${row.url.length > 50 ? row.url.substring(0, 50) + '...' : row.url}</td>
                     <td title="${row.message}">${row.status}</td>
                 </tr>
             `;
@@ -1176,20 +1161,12 @@ class PageController {
         html += `
             <div class="upload-stats">
                 <div class="upload-stat success">
-                    <span>Valid:</span>
-                    <span class="count">${successCount}</span>
-                </div>
-                <div class="upload-stat warning">
-                    <span>Auto-group:</span>
-                    <span class="count">${warningCount}</span>
+                    <span>Valid URLs:</span>
+                    <span class="count">${validCount}</span>
                 </div>
                 <div class="upload-stat error">
                     <span>Errors:</span>
                     <span class="count">${errorCount}</span>
-                </div>
-                <div class="upload-stat">
-                    <span>Skipped:</span>
-                    <span class="count">${parsedData.data.length - validRows.length}</span>
                 </div>
             </div>
         `;
@@ -1204,67 +1181,47 @@ class PageController {
             return;
         }
 
+        const selectedBrandId = this.elements.csvBrandSelect.value;
+        if (!selectedBrandId) {
+            alert('Please select a brand for these URLs');
+            return;
+        }
+
         try {
-            const availableBrands = await this.loadAvailableBrands();
+            // Find the target group for the selected brand
+            let targetGroup = this.groups.find(g => g.brandId === selectedBrandId);
             
-            if (!availableBrands || typeof availableBrands !== 'object') {
-                throw new Error('Failed to load brand data for processing');
+            if (!targetGroup) {
+                // This shouldn't happen if groups are properly initialized, but handle it just in case
+                const response = await fetch(chrome.runtime.getURL('response_bank.json'));
+                const responseBank = await response.json();
+                const brandName = responseBank[selectedBrandId]?.name || 'Unknown Brand';
+                
+                targetGroup = {
+                    id: `brand_${selectedBrandId}`,
+                    name: brandName,
+                    brandId: selectedBrandId,
+                    urls: [],
+                    isPermanent: true
+                };
+                this.groups.push(targetGroup);
             }
-            
+
             let addedCount = 0;
-            let createdGroups = 0;
+            let skippedCount = 0;
 
             for (const row of this.csvData.data) {
-                if (row.status === 'skip' || row.status === 'error') {
+                if (row.status === 'error') {
+                    skippedCount++;
                     continue;
-                }
-
-                let targetGroup;
-
-                if (row.groupName) {
-                    // Find existing group by name and brand
-                    targetGroup = this.groups.find(g => 
-                        g.name === row.groupName && g.brandId === row.brandId
-                    );
-                    
-                    if (!targetGroup) {
-                        // Create new group with specified name
-                        targetGroup = {
-                            id: this.generateId(),
-                            name: row.groupName,
-                            brandId: row.brandId,
-                            urls: [],
-                            selected: false
-                        };
-                        this.groups.push(targetGroup);
-                        createdGroups++;
-                    }
-                } else {
-                    // Create group named after brand
-                    const brandName = availableBrands[row.brandId].name;
-                    const groupName = `${brandName} Group`;
-                    
-                    targetGroup = this.groups.find(g => 
-                        g.name === groupName && g.brandId === row.brandId
-                    );
-                    
-                    if (!targetGroup) {
-                        targetGroup = {
-                            id: this.generateId(),
-                            name: groupName,
-                            brandId: row.brandId,
-                            urls: [],
-                            selected: false
-                        };
-                        this.groups.push(targetGroup);
-                        createdGroups++;
-                    }
                 }
 
                 // Add URL if not already present
                 if (!targetGroup.urls.includes(row.url)) {
                     targetGroup.urls.push(row.url);
                     addedCount++;
+                } else {
+                    skippedCount++;
                 }
             }
 
@@ -1272,7 +1229,12 @@ class PageController {
             this.hideUploadCsvModal();
             this.render();
 
-            alert(`CSV upload completed!\n\nAdded: ${addedCount} URLs\nCreated: ${createdGroups} new groups`);
+            const message = `CSV upload completed!\n\nAdded: ${addedCount} URLs to ${targetGroup.name}`;
+            if (skippedCount > 0) {
+                alert(message + `\nSkipped: ${skippedCount} URLs (duplicates or errors)`);
+            } else {
+                alert(message);
+            }
 
         } catch (error) {
             console.error('Error processing CSV upload:', error);
@@ -3294,9 +3256,7 @@ class PageController {
         modal.style.display = 'none';
         
         // Call specific cleanup methods based on modal ID
-        if (modal.id === 'addGroupModal') {
-            this.hideAddGroupModal();
-        } else if (modal.id === 'addUrlModal') {
+        if (modal.id === 'addUrlModal') {
             this.hideAddUrlModal();
         } else if (modal.id === 'uploadCsvModal') {
             this.hideUploadCsvModal();

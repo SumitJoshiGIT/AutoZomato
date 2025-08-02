@@ -677,12 +677,6 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
         });
         
         sendResponse({ success: true });
-    } else if (message.action === 'deactivateSession') {
-        console.log('[AutoZomato] Received deactivation message');
-        window.autoZomatoActivated = false;
-        window.autoZomatoActivatedAt = 0;
-        console.log('[AutoZomato] Session deactivated');
-        sendResponse({ success: true });
     }
 });
 
@@ -1075,10 +1069,6 @@ function sendProcessingCompletionSignal(force = false) {
         },
         jobId: jobId
     });
-    
-    // Clear activation flag when processing completes
-    console.log('[AutoZomato] Processing completed. Clearing activation flag.');
-    window.autoZomatoActivated = false;
 }
 
 // Function to handle processing errors
@@ -1097,10 +1087,6 @@ function handleProcessingError(error) {
         error: error && error.stack ? error.stack : (error && error.message ? error.message : String(error)),
         jobId: jobId
     });
-    
-    // Clear activation flag when processing errors occur
-    console.log('[AutoZomato] Processing error occurred. Clearing activation flag.');
-    window.autoZomatoActivated = false;
 }
 
 function showAutoZomatoError(error) {
@@ -3142,25 +3128,6 @@ if (document.readyState === 'loading') {
 }
 
 function initialize() {
-    // Check if AutoZomato has been activated for this session
-    const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes in milliseconds
-    const now = Date.now();
-    const activatedAt = window.autoZomatoActivatedAt || 0;
-    const sessionExpired = now - activatedAt > SESSION_TIMEOUT;
-    
-    if (!window.autoZomatoActivated || sessionExpired) {
-        if (sessionExpired) {
-            console.log('[AutoZomato] Session expired. Clearing activation.');
-            window.autoZomatoActivated = false;
-            window.autoZomatoActivatedAt = 0;
-        }
-        console.log('[AutoZomato] Extension not activated for this session. Skipping initialization.');
-        console.log('[AutoZomato] To activate, start processing from the main extension page.');
-        return;
-    }
-    
-    console.log(`[AutoZomato] Session active. Activated ${Math.round((now - activatedAt) / 1000 / 60)} minutes ago.`);
-    
     // Wait a bit for the config to be injected
     setTimeout(() => {
         const config = window.autoZomatoConfig || {};

@@ -25,7 +25,7 @@
                     <div class="groups-header">
                         <button id="selectAllGroups" class="btn btn-secondary">Select All</button>
                         <button id="deselectAllGroups" class="btn btn-secondary">Deselect All</button>
-                        <button id="addGroupBtn" class="btn btn-primary">Add New Group</button>
+                        <button id="refreshGroupsBtn" class="btn btn-primary">Refresh Groups</button>
                     </div>
                     <div id="groupsList" class="groups-list">
                         <!-- Groups will be populated here -->
@@ -256,31 +256,6 @@
     </div>
 
     <!-- Modals -->
-    <div id="addGroupModal" class="modal" style="display: none;">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>Add New Group</h3>
-                <button class="modal-close">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label for="groupName">Group Name:</label>
-                    <input type="text" id="groupName" class="form-input" placeholder="Enter group name">
-                </div>
-                <div class="form-group">
-                    <label for="groupBrand">Brand:</label>
-                    <select id="groupBrand" class="form-select">
-                        <option value="">Select a brand...</option>
-                    </select>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button id="cancelGroupBtn" class="btn btn-secondary">Cancel</button>
-                <button id="saveGroupBtn" class="btn btn-primary">Save Group</button>
-            </div>
-        </div>
-    </div>
-
     <div id="addUrlModal" class="modal" style="display: none;">
         <div class="modal-content">
             <div class="modal-header">
@@ -306,7 +281,7 @@
         </div>
     </div>
 
-    <div id="uploadCsvModal" class="modal" style="display: none;">
+        <div id="uploadCsvModal" class="modal" style="display: none;">
         <div class="modal-content">
             <div class="modal-header">
                 <h3>Upload URLs from CSV</h3>
@@ -314,17 +289,24 @@
             </div>
             <div class="modal-body">
                 <div class="form-group">
+                    <label for="csvBrandSelect">Select Brand:</label>
+                    <select id="csvBrandSelect" class="form-select">
+                        <option value="">Select a brand...</option>
+                    </select>
+                    <small>Choose the brand these URLs belong to</small>
+                </div>
+                <div class="form-group">
                     <label for="csvFile">Select CSV File:</label>
                     <input type="file" id="csvFile" class="form-input" accept=".csv" />
-                    <small>CSV format: Group Name, Brand ID, URL</small>
+                    <small>CSV format: Single column with URLs</small>
                 </div>
                 <div class="form-group">
                     <label>CSV Format Guidelines:</label>
                     <ul style="margin: 10px 0; padding-left: 20px; font-size: 0.9em;">
-                        <li>Three columns: Group Name, Brand ID, URL</li>
-                        <li>If Brand ID is empty, that row will be skipped</li>
-                        <li>If Group Name is empty, URLs will be added to a new group created by brand</li>
+                        <li>Single column containing URLs</li>
                         <li>Header row is optional and will be auto-detected</li>
+                        <li>URLs will be added to the selected brand's group</li>
+                        <li>Duplicate URLs will be skipped automatically</li>
                     </ul>
                 </div>
                 <div id="csvPreview" class="csv-preview" style="display: none;">
@@ -337,7 +319,7 @@
                 <button id="uploadCsvConfirmBtn" class="btn btn-primary" disabled>Upload URLs</button>
             </div>
         </div>
-    </div>
+    >
 
     <!-- Include component scripts -->
     <script src="components/ReviewResultsTable.js"></script>
