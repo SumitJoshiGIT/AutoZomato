@@ -315,7 +315,7 @@
                 "storyName": "Zomato Delivery-Related Issues",
                 "responses": [
                     "Hi {CustomerName}, we are sorry for the issues you faced with the delivery. We will communicate with Zomato to address these concerns and provide a better experience next time.",
-                    "Hi {Customer's Name}, we apologize for any issues caused by Zomato's delivery service. We are in communication with them to enhance the delivery experience. Thank you for bringing this to our attention."
+                    "Hi {CustomerName}, we apologize for any issues caused by Zomato's delivery service. We are in communication with them to enhance the delivery experience. Thank you for bringing this to our attention."
                 ]
             },
             {
@@ -330,8 +330,8 @@
                 "id": "7",
                 "storyName": "Rude Staff",
                 "responses": [
-                    "Hi {Customer's Name}, we regret to hear about your experience with our staff. This is not reflective of our service standards. Please reach out to us directly with your order details on 8767121212 or send us an email at customer.support@burgersinghonline.com so we can make it right for you. Your satisfaction is our top priority.",
-                    "Dear {Customer's Name}, we are sorry for the negative experience with our staff. Please reach out to us on 8767121212 or send us an email at customer.support@burgersinghonline.com so we can resolve this on priority."
+                    "Hi {CustomerName}, we regret to hear about your experience with our staff. This is not reflective of our service standards. Please reach out to us directly with your order details on 8767121212 or send us an email at customer.support@burgersinghonline.com so we can make it right for you. Your satisfaction is our top priority.",
+                    "Dear {CustomerName}, we are sorry for the negative experience with our staff. Please reach out to us on 8767121212 or send us an email at customer.support@burgersinghonline.com so we can resolve this on priority."
                 ]
             },
             {
