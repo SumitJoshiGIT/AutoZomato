@@ -323,7 +323,7 @@
                 "storyName": "Missing Cutlery",
                 "responses": [
                     "Hi {CustomerName}, we apologize for the missing items in your order. Please contact us on 8767121212 or send us an email at customer.support@burgersinghonline.com for a resolution.",
-                    "Hello {Customer Name}, our apologies for the missing cutlery. We understand the importance of a complete order. Immediate steps have been taken to address this and to avoid any future occurrences."
+                    "Hello {CustomerName}, our apologies for the missing cutlery. We understand the importance of a complete order. Immediate steps have been taken to address this and to avoid any future occurrences."
                 ]
             },
             {
@@ -350,5 +350,5 @@
                 ]
             }
         ]
-}
+    }
 }
