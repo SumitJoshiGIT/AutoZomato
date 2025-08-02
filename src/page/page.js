@@ -1502,7 +1502,7 @@ class PageController {
         
         console.log('[Dashboard] Setting progress bar to:', percentage + '%');
         this.elements.progressFill.style.width = `${percentage}%`;
-        this.elements.statusText.textContent = `Processing ${current} of ${total} reviews...`;
+        this.elements.statusText.textContent = `Processing ${current} of ${total} ...`;
     }
 
     updateTabStatus(tabId, url, status, data) {
