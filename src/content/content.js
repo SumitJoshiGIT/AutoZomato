@@ -2563,7 +2563,7 @@ async function processReviewWithGPTMode(review, config, onReplySuccess) {
             if (extractedName && extractedName.length > 1 && !extractedName.match(/\d/)) {
                 finalReply = finalReply.replace(/{CustomerName}/g, extractedName);
             } else {
-                finalReply = finalReply.replace(/{CustomerName}/g, getRandomNeutralGreeting());
+                finalReply = finalReply.replace(/{CustomerName}/g,'');
             }
         }
         
