@@ -2180,24 +2180,19 @@ async function handleComplaintChange(event, reviewId) {
         return;
     }
     
-    console.log(`[AutoZomato] Complaint changed for review ${reviewId}: ${review.complaintId} -> ${newComplaintId}`);
+    console.log(`[AutoZomato] Corrected complaint changed for review ${reviewId}: ${review.correctedComplaintId || review.complaintId} -> ${newComplaintId}`);
     
-    // Track the correction
-    if (review.complaintId !== newComplaintId) {
-        if (!review.originalComplaintId) {
-            reviewManager.updateReview(reviewId, {
-                originalComplaintId: review.complaintId
-            });
-        }
+    // Save original AI detection if not already saved
+    if (!review.originalComplaintId) {
         reviewManager.updateReview(reviewId, {
-            correctedComplaintId: newComplaintId,
-            correctionTimestamp: new Date().toISOString()
+            originalComplaintId: review.complaintId
         });
     }
     
-    // Update complaint ID
+    // Update the corrected complaint ID (this is what the user is changing)
     reviewManager.updateReview(reviewId, {
-        complaintId: newComplaintId
+        correctedComplaintId: newComplaintId,
+        correctionTimestamp: new Date().toISOString()
     });
     
     // Regenerate reply if complaint type is selected
@@ -2236,9 +2231,6 @@ async function handleComplaintChange(event, reviewId) {
             console.error('[AutoZomato] Error regenerating reply:', error);
         }
     }
-    
-    // Update correction indicator
-    updateCorrectionIndicator(reviewId);
 }
 
 // Generate reply based on complaint type
@@ -2295,43 +2287,6 @@ async function generateReplyFromComplaint(review, complaintId) {
 }
 
 // Update correction indicator for a review
-function updateCorrectionIndicator(reviewId) {
-    const row = document.querySelector(`#autozomato-log-popup tr[data-review-id="${reviewId}"]`);
-    if (!row) return;
-    
-    const reviewManager = window.AutoZomatoReviewManager;
-    const review = reviewManager.reviews.get(reviewId);
-    if (!review) return;
-    
-    let correctionCell = row.querySelector('.correction-indicator');
-    if (!correctionCell) {
-        // Create correction indicator cell if it doesn't exist
-        correctionCell = document.createElement('td');
-        correctionCell.className = 'correction-indicator';
-        correctionCell.style.cssText = `
-            padding: 4px;
-            border-bottom: 1px solid #eee;
-            text-align: center;
-            font-size: 10px;
-            vertical-align: top;
-        `;
-        row.appendChild(correctionCell);
-    }
-    
-    if (review.correctedComplaintId) {
-        const originalName = complaintMappings.get(review.originalComplaintId)?.name || review.originalComplaintId;
-        const correctedName = complaintMappings.get(review.correctedComplaintId)?.name || review.correctedComplaintId;
-        correctionCell.innerHTML = `
-            <span style="color: #e53e3e; text-decoration: line-through;">${originalName}</span><br>
-            <span style="color: #48bb78;">→ ${correctedName}</span>
-        `;
-        correctionCell.title = `Corrected on ${new Date(review.correctionTimestamp).toLocaleString()}`;
-    } else {
-        correctionCell.innerHTML = '';
-        correctionCell.title = '';
-    }
-}
-
 // Helper function to make GPT API request
 async function makeGPTRequest(prompt, gptConfig) {
     try {
@@ -2548,10 +2503,7 @@ async function processReviewWithGPTMode(review, config, onReplySuccess) {
             }
         }
 
-        if (!replyTemplate) {
-            replyTemplate = 'Thank you for your review! We appreciate your feedback.';
-            selectedCategory = 'Default';
-        }
+       
 
         // Step 3: Personalize reply using GPT-extracted name
         let finalReply = replyTemplate;
@@ -2562,8 +2514,6 @@ async function processReviewWithGPTMode(review, config, onReplySuccess) {
             const extractedName = extractFirstName(review.customerName);
             if (extractedName && extractedName.length > 1 && !extractedName.match(/\d/)) {
                 finalReply = finalReply.replace(/{CustomerName}/g, extractedName);
-            } else {
-                finalReply = finalReply.replace(/{CustomerName}/g,'');
             }
         }
         
@@ -2637,177 +2587,177 @@ async function processReviewWithGPTMode(review, config, onReplySuccess) {
 }
 
 // Offline Mode Processing - Template-based responses without AI
-async function processReviewWithOfflineMode(review, config, responseBank, onReplySuccess) {
-    try {
-        console.log(`[AutoZomato] Processing review in offline mode: ${review.reviewId}`);
+// async function processReviewWithOfflineMode(review, config, responseBank, onReplySuccess) {
+//     try {
+//         console.log(`[AutoZomato] Processing review in offline mode: ${review.reviewId}`);
         
-        // Step 1: Basic name extraction using local logic
-        const extractedName = smartExtractFirstName(review.customerName);
-        const firstName = extractedName ? extractedName.name : 'Customer';
-        const confidence = extractedName ? extractedName.confidence : 0;
+//         // Step 1: Basic name extraction using local logic
+//         const extractedName = smartExtractFirstName(review.customerName);
+//         const firstName = extractedName ? extractedName.name : 'Customer';
+//         const confidence = extractedName ? extractedName.confidence : 0;
         
-        // Step 2: Simple sentiment analysis based on keywords
-        const sentiment = analyzeOfflineSentiment(review.reviewText || '');
+//         // Step 2: Simple sentiment analysis based on keywords
+//         const sentiment = analyzeOfflineSentiment(review.reviewText || '');
         
-        // Step 3: Basic complaint detection
-        const complaintId = detectOfflineComplaint(review.reviewText || '');
+//         // Step 3: Basic complaint detection
+//         const complaintId = detectOfflineComplaint(review.reviewText || '');
         
-        // Step 4: Generate reply using response bank
-        let replyTemplate = '';
-        let selectedCategory = '';
+//         // Step 4: Generate reply using response bank
+//         let replyTemplate = '';
+//         let selectedCategory = '';
         
-        if (complaintId && complaintId !== 'None') {
-            // Use complaint-specific template
-            const complaint = responseBank.complaints?.find(c => c.id === complaintId);
-            if (complaint && complaint.responses && complaint.responses.length > 0) {
-                const randomTemplate = complaint.responses[Math.floor(Math.random() * complaint.responses.length)];
-                replyTemplate = randomTemplate;
-                selectedCategory = `Complaint: ${complaint.storyName}`;
-            }
-        } else {
-            // Use rating-based response from categories
-            const rating = review.rating ? Math.floor(review.rating) : 5; // Default to 5 stars if no rating
-            const category = responseBank.categories?.find(c => c.id === rating.toString());
+//         if (complaintId && complaintId !== 'None') {
+//             // Use complaint-specific template
+//             const complaint = responseBank.complaints?.find(c => c.id === complaintId);
+//             if (complaint && complaint.responses && complaint.responses.length > 0) {
+//                 const randomTemplate = complaint.responses[Math.floor(Math.random() * complaint.responses.length)];
+//                 replyTemplate = randomTemplate;
+//                 selectedCategory = `Complaint: ${complaint.storyName}`;
+//             }
+//         } else {
+//             // Use rating-based response from categories
+//             const rating = review.rating ? Math.floor(review.rating) : 5; // Default to 5 stars if no rating
+//             const category = responseBank.categories?.find(c => c.id === rating.toString());
             
-            if (category && category.responses) {
-                // Choose between "Written Review" and "No Written Review" based on review text
-                const hasReviewText = review.reviewText && review.reviewText.trim().length > 0;
-                const responseType = hasReviewText ? "Written Review" : "No Written Review";
-                const responses = category.responses[responseType];
+//             if (category && category.responses) {
+//                 // Choose between "Written Review" and "No Written Review" based on review text
+//                 const hasReviewText = review.reviewText && review.reviewText.trim().length > 0;
+//                 const responseType = hasReviewText ? "Written Review" : "No Written Review";
+//                 const responses = category.responses[responseType];
                 
-                if (responses && responses.length > 0) {
-                    const randomTemplate = responses[Math.floor(Math.random() * responses.length)];
-                    replyTemplate = randomTemplate;
-                    selectedCategory = `${rating} Star: ${category.storyName}`;
-                }
-            }
-        }
+//                 if (responses && responses.length > 0) {
+//                     const randomTemplate = responses[Math.floor(Math.random() * responses.length)];
+//                     replyTemplate = randomTemplate;
+//                     selectedCategory = `${rating} Star: ${category.storyName}`;
+//                 }
+//             }
+//         }
         
-        // Step 5: Personalize the reply with proper placeholders
-        let personalizedReply = replyTemplate || `Thank you for your feedback, ${firstName}! We appreciate your time and will continue to improve our service.`;
+//         // Step 5: Personalize the reply with proper placeholders
+//         let personalizedReply = replyTemplate || `Thank you for your feedback, ${firstName}! We appreciate your time and will continue to improve our service.`;
         
-        // Replace both {CustomerName} and {firstName} placeholders
-        personalizedReply = personalizedReply.replace(/\{CustomerName\}/g, firstName);
-        personalizedReply = personalizedReply.replace(/\{firstName\}/g, firstName);
+//         // Replace both {CustomerName} and {firstName} placeholders
+//         personalizedReply = personalizedReply.replace(/\{CustomerName\}/g, firstName);
+//         personalizedReply = personalizedReply.replace(/\{firstName\}/g, firstName);
         
-        // Replace {LocationName} with restaurant name
-        const restaurantName = window.AutoZomatoReviewManager.processingState.currentRestaurantName || 'our restaurant';
-        personalizedReply = personalizedReply.replace(/\{LocationName\}/g, restaurantName);
+//         // Replace {LocationName} with restaurant name
+//         const restaurantName = window.AutoZomatoReviewManager.processingState.currentRestaurantName || 'our restaurant';
+//         personalizedReply = personalizedReply.replace(/\{LocationName\}/g, restaurantName);
         
-        const finalReply = personalizedReply;
+//         const finalReply = personalizedReply;
         
-        // Step 6: Fill in the reply field
-        const replyField = review.replyTextarea;
-        if (replyField) {
-            replyField.value = finalReply;
-            replyField.dispatchEvent(new Event('input', { bubbles: true }));
-        }
+//         // Step 6: Fill in the reply field
+//         const replyField = review.replyTextarea;
+//         if (replyField) {
+//             replyField.value = finalReply;
+//             replyField.dispatchEvent(new Event('input', { bubbles: true }));
+//         }
         
-        // Step 7: Send data to background script
-        const reviewDataToSend = {
-            reviewId: review.reviewId,
-            customerName: review.customerName,
-            extractedName: firstName,
-            rating: review.rating || 'N/A',
-            reviewText: review.reviewText || '',
-            reply: finalReply,
-            sentiment: sentiment,
-            complaintId: complaintId,
-            confidence: confidence,
-            selectedCategory: selectedCategory,
-            restaurantName: window.AutoZomatoReviewManager.processingState.currentRestaurantName,
-            replied: false,
-            timestamp: new Date().toISOString()
-        };
+//         // Step 7: Send data to background script
+//         const reviewDataToSend = {
+//             reviewId: review.reviewId,
+//             customerName: review.customerName,
+//             extractedName: firstName,
+//             rating: review.rating || 'N/A',
+//             reviewText: review.reviewText || '',
+//             reply: finalReply,
+//             sentiment: sentiment,
+//             complaintId: complaintId,
+//             confidence: confidence,
+//             selectedCategory: selectedCategory,
+//             restaurantName: window.AutoZomatoReviewManager.processingState.currentRestaurantName,
+//             replied: false,
+//             timestamp: new Date().toISOString()
+//         };
         
-        console.log('[AutoZomato Content] Sending offline review data to background:', {
-            reviewId: reviewDataToSend.reviewId,
-            customerName: reviewDataToSend.customerName,
-            restaurantName: reviewDataToSend.restaurantName,
-            hasReply: !!reviewDataToSend.reply
-        });
+//         console.log('[AutoZomato Content] Sending offline review data to background:', {
+//             reviewId: reviewDataToSend.reviewId,
+//             customerName: reviewDataToSend.customerName,
+//             restaurantName: reviewDataToSend.restaurantName,
+//             hasReply: !!reviewDataToSend.reply
+//         });
         
-        chrome.runtime.sendMessage({
-            action: 'reviewProcessed',
-            reviewData: reviewDataToSend
-        });
+//         chrome.runtime.sendMessage({
+//             action: 'reviewProcessed',
+//             reviewData: reviewDataToSend
+//         });
         
-        // Update counter
-        onReplySuccess();
+//         // Update counter
+//         onReplySuccess();
         
-        // Return data for the main function to handle state management
-        return {
-            firstName: firstName,
-            sentiment: sentiment,
-            complaintId: complaintId,
-            selectedCategory: selectedCategory,
-            reply: finalReply,
-            confidence: confidence,
-            publishBtn: review.submitButton
-        };
+//         // Return data for the main function to handle state management
+//         return {
+//             firstName: firstName,
+//             sentiment: sentiment,
+//             complaintId: complaintId,
+//             selectedCategory: selectedCategory,
+//             reply: finalReply,
+//             confidence: confidence,
+//             publishBtn: review.submitButton
+//         };
         
-    } catch (error) {
-        console.error('[AutoZomato] Error in offline mode processing:', error);
+//     } catch (error) {
+//         console.error('[AutoZomato] Error in offline mode processing:', error);
         
-        // Return fallback data to prevent processing from stopping
-        return {
-            firstName: extractFirstNameFallback(review.customerName),
-            sentiment: 'Neutral',
-            complaintId: null,
-            selectedCategory: 'Error - Fallback',
-            reply: 'Thank you for your review! We appreciate your feedback.',
-            confidence: 0.1,
-            publishBtn: review.submitButton
-        };
-    }
-}
+//         // Return fallback data to prevent processing from stopping
+//         return {
+//             firstName: extractFirstNameFallback(review.customerName),
+//             sentiment: 'Neutral',
+//             complaintId: null,
+//             selectedCategory: 'Error - Fallback',
+//             reply: 'Thank you for your review! We appreciate your feedback.',
+//             confidence: 0.1,
+//             publishBtn: review.submitButton
+//         };
+//     }
+// }
 
-// Offline sentiment analysis using keywords
-function analyzeOfflineSentiment(reviewText) {
-    const text = reviewText.toLowerCase();
+// // Offline sentiment analysis using keywords
+// function analyzeOfflineSentiment(reviewText) {
+//     const text = reviewText.toLowerCase();
     
-    const positiveKeywords = ['good', 'great', 'excellent', 'amazing', 'fantastic', 'love', 'perfect', 'wonderful', 'awesome', 'delicious', 'tasty', 'fresh', 'quick', 'fast', 'recommend', 'satisfied', 'happy', 'pleased', 'nice', 'best'];
-    const negativeKeywords = ['bad', 'terrible', 'awful', 'horrible', 'worst', 'hate', 'disgusting', 'cold', 'late', 'slow', 'rude', 'dirty', 'stale', 'expired', 'wrong', 'missing', 'disappointed', 'unsatisfied', 'poor', 'waste'];
+//     const positiveKeywords = ['good', 'great', 'excellent', 'amazing', 'fantastic', 'love', 'perfect', 'wonderful', 'awesome', 'delicious', 'tasty', 'fresh', 'quick', 'fast', 'recommend', 'satisfied', 'happy', 'pleased', 'nice', 'best'];
+//     const negativeKeywords = ['bad', 'terrible', 'awful', 'horrible', 'worst', 'hate', 'disgusting', 'cold', 'late', 'slow', 'rude', 'dirty', 'stale', 'expired', 'wrong', 'missing', 'disappointed', 'unsatisfied', 'poor', 'waste'];
     
-    let positiveCount = 0;
-    let negativeCount = 0;
+//     let positiveCount = 0;
+//     let negativeCount = 0;
     
-    positiveKeywords.forEach(keyword => {
-        if (text.includes(keyword)) positiveCount++;
-    });
+//     positiveKeywords.forEach(keyword => {
+//         if (text.includes(keyword)) positiveCount++;
+//     });
     
-    negativeKeywords.forEach(keyword => {
-        if (text.includes(keyword)) negativeCount++;
-    });
+//     negativeKeywords.forEach(keyword => {
+//         if (text.includes(keyword)) negativeCount++;
+//     });
     
-    if (positiveCount > negativeCount) return 'Positive';
-    if (negativeCount > positiveCount) return 'Negative';
-    return 'Neutral';
-}
+//     if (positiveCount > negativeCount) return 'Positive';
+//     if (negativeCount > positiveCount) return 'Negative';
+//     return 'Neutral';
+// }
 
-// Offline complaint detection using keywords
-function detectOfflineComplaint(reviewText) {
-    const text = reviewText.toLowerCase();
+// // Offline complaint detection using keywords
+// function detectOfflineComplaint(reviewText) {
+//     const text = reviewText.toLowerCase();
     
-    const complaintKeywords = {
-        'Food Quality': ['cold', 'stale', 'expired', 'taste', 'flavor', 'spoiled', 'bad taste', 'not fresh', 'undercooked', 'overcooked', 'burnt', 'tasteless'],
-        'Service': ['rude', 'slow', 'late', 'wait', 'staff', 'behavior', 'attitude', 'service', 'ignored', 'unprofessional'],
-        'Delivery': ['late delivery', 'delayed', 'never arrived', 'wrong address', 'delivery boy', 'damaged', 'spilled', 'missing items'],
-        'Packaging': ['leaking', 'broken', 'poor packaging', 'messy', 'presentation', 'container', 'spillage'],
-        'Hygiene': ['dirty', 'unclean', 'hair', 'hygiene', 'sanitize', 'contaminated', 'food poisoning'],
-        'Pricing': ['expensive', 'overpriced', 'costly', 'money', 'refund', 'value', 'price', 'charges']
-    };
+//     const complaintKeywords = {
+//         'Food Quality': ['cold', 'stale', 'expired', 'taste', 'flavor', 'spoiled', 'bad taste', 'not fresh', 'undercooked', 'overcooked', 'burnt', 'tasteless'],
+//         'Service': ['rude', 'slow', 'late', 'wait', 'staff', 'behavior', 'attitude', 'service', 'ignored', 'unprofessional'],
+//         'Delivery': ['late delivery', 'delayed', 'never arrived', 'wrong address', 'delivery boy', 'damaged', 'spilled', 'missing items'],
+//         'Packaging': ['leaking', 'broken', 'poor packaging', 'messy', 'presentation', 'container', 'spillage'],
+//         'Hygiene': ['dirty', 'unclean', 'hair', 'hygiene', 'sanitize', 'contaminated', 'food poisoning'],
+//         'Pricing': ['expensive', 'overpriced', 'costly', 'money', 'refund', 'value', 'price', 'charges']
+//     };
     
-    for (const [category, keywords] of Object.entries(complaintKeywords)) {
-        for (const keyword of keywords) {
-            if (text.includes(keyword)) {
-                return category;
-            }
-        }
-    }
+//     for (const [category, keywords] of Object.entries(complaintKeywords)) {
+//         for (const keyword of keywords) {
+//             if (text.includes(keyword)) {
+//                 return category;
+//             }
+//         }
+//     }
     
-    return 'None';
-}
+//     return 'None';
+// }
 
 // Ollama Mode Processing - Multi-step approach  
 async function processReviewWithOllamaMode(review, config, promptContext, responseBank, onReplySuccess) {
@@ -3280,7 +3230,8 @@ async function renderLogPopupContent() {
                 <th style="padding: 6px; text-align: center; border-bottom: 1px solid #eee; width: 50px;">Rating</th>
                 <th style="padding: 6px; text-align: center; border-bottom: 1px solid #eee; width: 70px;">Sentiment</th>
                 <th style="padding: 6px; text-align: center; border-bottom: 1px solid #eee; width: 60px;">Name Conf.</th>
-                <th style="padding: 6px; text-align: left; border-bottom: 1px solid #eee; width: 120px;">Complaint Type</th>
+                <th style="padding: 6px; text-align: left; border-bottom: 1px solid #eee; width: 100px;">AI Complaint</th>
+                <th style="padding: 6px; text-align: left; border-bottom: 1px solid #eee; width: 120px;">Corrected Complaint</th>
                 <th style="padding: 6px; text-align: left; border-bottom: 1px solid #eee;">Reply (Editable)</th>
                 <th style="padding: 6px; text-align: center; border-bottom: 1px solid #eee; width: 60px;">Status</th>
             </tr>
@@ -3300,7 +3251,7 @@ async function renderLogPopupContent() {
             ? 'No reviews processed yet. Wait for AutoZomato to process reviews, or click the indicator to start processing.'
             : 'No reviews processed yet. Navigate to a restaurant review page to see processed reviews here.';
         
-        tbody.innerHTML = `<tr><td colspan="7" style="padding: 20px; text-align: center; color: #888; line-height: 1.4;">${emptyMessage}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9" style="padding: 20px; text-align: center; color: #888; line-height: 1.4;">${emptyMessage}</td></tr>`;
     } else {
         allReviews.forEach(review => {
             const row = document.createElement('tr');
@@ -3328,6 +3279,14 @@ async function renderLogPopupContent() {
             const rating = (typeof review.rating === 'number' || (typeof review.rating === 'string' && review.rating !== 'N/A')) ? review.rating : 'N/A';
             const ratingColor = rating >= 4 ? '#48bb78' : rating <= 2 ? '#e53e3e' : '#ed8936';
 
+            // Get original AI complaint name for display
+            const originalComplaintId = review.originalComplaintId || review.complaintId;
+            const originalComplaintName = originalComplaintId ? 
+                (complaintMappings.get(originalComplaintId)?.name || originalComplaintId) : 'None';
+            
+            // Get corrected complaint ID for dropdown selection
+            const correctedComplaintId = review.correctedComplaintId || review.complaintId;
+
             row.innerHTML = `
                 <td style="padding: 6px; border-bottom: 1px solid #eee; text-align: center; vertical-align: top;">
                     <input type="checkbox" class="include-checkbox" ${checkboxChecked} ${checkboxDisabled} 
@@ -3346,8 +3305,11 @@ async function renderLogPopupContent() {
                 <td style="padding: 6px; border-bottom: 1px solid #eee; text-align: center; vertical-align: top;">
                     <span style="color: ${nameConfColor}; font-weight: bold; font-size: 10px;">${nameConfidence}%</span>
                 </td>
+                <td style="padding: 6px; border-bottom: 1px solid #eee; vertical-align: top; background-color: #f8f9fa;">
+                    <div style="font-size: 11px; color: #666; padding: 4px; border-radius: 3px;">${originalComplaintName}</div>
+                </td>
                 <td class="complaint-cell" style="padding: 6px; border-bottom: 1px solid #eee; vertical-align: top;">
-                    <!-- Complaint dropdown will be inserted here -->
+                    <!-- Corrected complaint dropdown will be inserted here -->
                 </td>
                 <td style="padding: 6px; border-bottom: 1px solid #eee; white-space: pre-wrap; word-break: break-word; vertical-align: top;">
                     ${replyCellContent}
@@ -3356,10 +3318,10 @@ async function renderLogPopupContent() {
             `;
             tbody.appendChild(row);
             
-            // Add complaint dropdown after row is added to DOM
+            // Add corrected complaint dropdown after row is added to DOM
             const complaintCell = row.querySelector('.complaint-cell');
             if (complaintCell) {
-                const dropdown = createComplaintSelector(review.complaintId, review.reviewId);
+                const dropdown = createComplaintSelector(correctedComplaintId, review.reviewId);
                 complaintCell.appendChild(dropdown);
             }
         });

@@ -476,18 +476,17 @@ class ReviewResultsTable {
             return this.complaintMappings[complaintId];
         }
         
-        // Fallback to basic mapping with user-friendly names
+        // Fallback to actual response bank complaint names
         const complaintMappings = {
-            '1': 'Food Quality Issues',
-            '2': 'Service Problems', 
-            '3': 'Delivery Issues',
-            '4': 'Order Accuracy Problems',
-            '5': 'Cleanliness Concerns',
-            '6': 'Pricing Complaints',
-            '7': 'Wait Time Issues',
-            '8': 'Staff Behavior Issues',
-            '9': 'Facility Problems',
-            '10': 'Other Issues'
+            '1': 'Incorrect Orders Received',
+            '2': 'Delivery Delays by Zomato', 
+            '3': 'Spill Packaging Issues',
+            '4': 'Cooking Instructions Not Followed',
+            '5': 'Zomato Delivery-Related Issues',
+            '6': 'Missing Cutlery',
+            '7': 'Rude Staff',
+            '8': 'Missing Item in Order',
+            '9': 'Food Safety – Foreign Materials'
         };
         
         return complaintMappings[complaintId] || `Complaint #${complaintId}`;
@@ -502,31 +501,53 @@ class ReviewResultsTable {
             // Use chrome.runtime.getURL for proper extension file access
             const response = await fetch(chrome.runtime.getURL('response_bank.json'));
             if (response.ok) {
-                const responseBank = await response.json();
-                if (responseBank.complaints && Array.isArray(responseBank.complaints)) {
+                const allResponseBank = await response.json();
+                
+                // Get brand-specific response bank (try brand 1 first, then fallback)
+                const brandId = window.autoZomatoBrandId || '1';
+                let responseBank = allResponseBank[brandId];
+                
+                if (!responseBank) {
+                    // Fallback to first available brand
+                    const firstBrandId = Object.keys(allResponseBank)[0];
+                    responseBank = allResponseBank[firstBrandId];
+                    console.log(`[ReviewResultsTable] Brand ${brandId} not found, using fallback brand ${firstBrandId}`);
+                }
+                
+                if (responseBank && responseBank.complaints && Array.isArray(responseBank.complaints)) {
                     this.complaintMappings = {};
                     responseBank.complaints.forEach(complaint => {
                         // Use storyName for user-friendly display
                         this.complaintMappings[complaint.id] = complaint.storyName;
                     });
                     console.log('[ReviewResultsTable] Complaint mappings loaded from response bank:', this.complaintMappings);
+                } else {
+                    console.warn('[ReviewResultsTable] No complaints found in response bank for brand');
+                    this.setFallbackComplaintMappings();
                 }
             }
         } catch (error) {
             console.warn('[ReviewResultsTable] Could not load response bank for complaint mappings:', error);
-            // Initialize with accurate fallback mappings based on response_bank.json
-            this.complaintMappings = {
-                '1': 'Incorrect Orders Received',
-                '2': 'Delivery Delays by Zomato',
-                '3': 'Spill Packaging Issues',
-                '4': 'Cooking Instructions Not Followed',
-                '5': 'Zomato Delivery-Related Issues',
-                '6': 'Missing Cutlery',
-                '7': 'Rude Staff',
-                '8': 'Missing Item in Order',
-                '9': 'Food Safety – Foreign Materials'
-            };
+            this.setFallbackComplaintMappings();
         }
+    }
+
+    /**
+     * Set fallback complaint mappings
+     */
+    setFallbackComplaintMappings() {
+        // Initialize with accurate fallback mappings based on response_bank.json
+        this.complaintMappings = {
+            '1': 'Incorrect Orders Received',
+            '2': 'Delivery Delays by Zomato',
+            '3': 'Spill Packaging Issues',
+            '4': 'Cooking Instructions Not Followed',
+            '5': 'Zomato Delivery-Related Issues',
+            '6': 'Missing Cutlery',
+            '7': 'Rude Staff',
+            '8': 'Missing Item in Order',
+            '9': 'Food Safety – Foreign Materials'
+        };
     }
 
     /**
